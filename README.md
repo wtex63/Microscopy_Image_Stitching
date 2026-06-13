@@ -5,9 +5,59 @@ Multiple merging can be done using datasets consisting of images. In addition, t
 
 ## Algorithmic process  
 - Phase Only Correlation 
-- Feature Matching
+- Feature Matching (classical fallback)
 - Homography matrix
 - Laplacian Pyramid 
+
+### Matching pipeline (current)
+1. Fast first pass: Phase-Only Correlation (POC) estimates displacement.
+2. Confidence gate: grayscale NCC score is computed for the phase shift.
+3. Fallback path (if phase confidence is low):
+   - Binary feature extraction on grayscale images.
+   - Descriptor matching with ratio test.
+   - RANSAC translation model.
+   - Confidence score from RANSAC inlier ratio.
+4. Homography estimation and Laplacian pyramid blending.
+
+### Progress and localization
+
+- Long-running stages are logged in the UI (pair loading, shift estimation, fallback usage, blending, completion).
+- Messages are localized via `Strings.resx` and `Strings.tr.resx`.
+
+### Recent hardening notes (latest commit)
+
+- Correlation accumulation now uses wider integer math to avoid overflow on larger overlap regions.
+- Panorama transfer now guards homography division when `z` is near zero.
+- Panorama background mean sampling now avoids divide-by-zero for narrow images.
+- Feature fallback random seeding is now one-time per process (instead of reseeding per call).
+
+### Windows SDK and OS profile migration notes
+
+- The project now uses resilient SDK selection: `WindowsTargetPlatformVersion` defaults to `10.0` so MSBuild can pick an installed compatible SDK.
+- The default OS profile is `Win11` (`TargetOsProfile=Win11`) with minimum version `10.0.22000.0`.
+- A `Win10` compatibility profile is available via `TargetOsProfile=Win10`, with minimum version `10.0.19041.0`.
+- Toolset is `v143` for all configurations.
+
+Build examples (MSBuild):
+
+```powershell
+# Default profile (Win11)
+msbuild .\Image_Stitching.sln /t:Build /p:Configuration=Debug;Platform=x64
+
+# Explicit Win11 profile
+msbuild .\Image_Stitching.sln /t:Build /p:Configuration=Debug;Platform=x64;TargetOsProfile=Win11
+
+# Win10 profile
+msbuild .\Image_Stitching.sln /t:Build /p:Configuration=Debug;Platform=x64;TargetOsProfile=Win10
+```
+
+See `TESTING_GUIDE.md` for migration verification steps.
+
+### References and licensing notes
+
+- Core methods (phase correlation, NCC, RANSAC, homography) are classical computer vision/statistical methods.
+- The implementation in this repository is custom C++/CLI code.
+- If external libraries (such as OpenCV ORB/AKAZE) are added later, include their license files and third-party notices in distribution.
 
 ### Acceleration using OpenMP
 <img src="https://developers.redhat.com/blog/wp-content/uploads/2016/03/openmp_lg_transparent.gif" width="290" height="110" />
