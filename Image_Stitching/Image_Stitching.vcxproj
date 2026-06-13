@@ -1,4 +1,4 @@
-﻿<?xml version="1.0" encoding="utf-8"?>
+<?xml version="1.0" encoding="utf-8"?>
 <Project DefaultTargets="Build" ToolsVersion="12.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
   <ItemGroup Label="ProjectConfigurations">
     <ProjectConfiguration Include="Debug|Win32">
@@ -118,6 +118,8 @@
     <Link>
       <GenerateDebugInformation>true</GenerateDebugInformation>
       <AdditionalDependencies />
+      <EntryPointSymbol>Main</EntryPointSymbol>
+      <SubSystem>Windows</SubSystem>
     </Link>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
@@ -148,6 +150,7 @@
     <ClInclude Include="Image_Stitching.h">
       <FileType>CppForm</FileType>
     </ClInclude>
+    <ClInclude Include="Localization.h" />
     <ClInclude Include="Panorama.h" />
     <ClInclude Include="Correlation.h" />
     <ClInclude Include="Process.h" />
@@ -158,11 +161,14 @@
     <EmbeddedResource Include="Image_Stitching.resx">
       <DependentUpon>Image_Stitching.h</DependentUpon>
     </EmbeddedResource>
+    <EmbeddedResource Include="Strings.resx" />
+    <EmbeddedResource Include="Strings.tr.resx" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="FFT.cpp" />
     <ClCompile Include="Image.cpp" />
     <ClCompile Include="Image_Stitching.cpp" />
+    <ClCompile Include="Localization.cpp" />
     <ClCompile Include="Panorama.cpp" />
     <ClCompile Include="Correlation.cpp" />
     <ClCompile Include="Process.cpp" />

@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="utf-8"?>
+<root>
+  <resheader name="resmimetype">
+    <value>text/microsoft-resx</value>
+  </resheader>
+  <resheader name="version">
+    <value>2.0</value>
+  </resheader>
+  <resheader name="reader">
+    <value>System.Resources.ResXResourceReader, System.Windows.Forms, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089</value>
+  </resheader>
+  <resheader name="writer">
+    <value>System.Resources.ResXResourceWriter, System.Windows.Forms, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089</value>
+  </resheader>
+
+  <data name="MenuFile" xml:space="preserve"><value>File</value></data>
+  <data name="MenuOpen" xml:space="preserve"><value>Open</value></data>
+  <data name="MenuLanguage" xml:space="preserve"><value>Language</value></data>
+  <data name="MenuEnglish" xml:space="preserve"><value>English</value></data>
+  <data name="MenuTurkish" xml:space="preserve"><value>Turkish</value></data>
+
+  <data name="FormTitle" xml:space="preserve"><value>Image Stitching</value></data>
+  <data name="LabelImage" xml:space="preserve"><value>image :</value></data>
+  <data name="ButtonSave" xml:space="preserve"><value>Save</value></data>
+
+  <data name="OpenDialogFileName" xml:space="preserve"><value>openFileDialog1</value></data>
+  <data name="OpenDialogFilter" xml:space="preserve"><value>Image files (*.bmp;*.jpg;*.jpeg)|*.bmp;*.jpg;*.jpeg|BMP files (*.bmp)|*.bmp|JPEG files (*.jpg;*.jpeg)|*.jpg;*.jpeg|All files (*.*)|*.*</value></data>
+
+  <data name="MsgMissingMatches" xml:space="preserve"><value>4 matching points could not be found.</value></data>
+  <data name="MsgSavedImage" xml:space="preserve"><value>SavedImg_{0}.bmp saved.</value></data>
+  <data name="MsgHomographyFailed" xml:space="preserve"><value>Homography failed.</value></data>
+
+  <data name="MsgAppErrorTitle" xml:space="preserve"><value>Application Error</value></data>
+  <data name="MsgAppError" xml:space="preserve"><value>Error: {0}
+
+Stack Trace:
+{1}</value></data>
+  <data name="MsgUnknownError" xml:space="preserve"><value>An unknown error occurred.</value></data>
+</root>

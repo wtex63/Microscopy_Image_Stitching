@@ -241,7 +241,7 @@ int ZoneDetection(BYTE* img1, BYTE* img2, int width, int height, xy* vec, xy* po
 	}
 
 	float max = -100000000.0;
-	int zoneID;
+	int zoneID = -1;
 	for (int i = 0; i < 4; i++) {
 		if (zoneCorr[i] > max) {
 			max = zoneCorr[i];
@@ -254,25 +254,30 @@ int ZoneDetection(BYTE* img1, BYTE* img2, int width, int height, xy* vec, xy* po
 	case 0:
 		vec->x = pocDot->x;
 		vec->y = pocDot->y;
+		delete[] zoneCorr;
 		return 0;
-		break;
 	case 1:
 		vec->x = width - pocDot->x;
 		vec->y = pocDot->y;
+		delete[] zoneCorr;
 		return 1;
-		break;
 	case 2:
 		vec->x = pocDot->x;
 		vec->y = height - pocDot->y;
+		delete[] zoneCorr;
 		return 2;
-		break;
 	case 3:
 		vec->x = width - pocDot->x;
 		vec->y = height - pocDot->y;
+		delete[] zoneCorr;
 		return 3;
-		break;
 	default:
 		break;
 	}
+
+	delete[] zoneCorr;
+	vec->x = 0;
+	vec->y = 0;
+	return 0;
 }
 

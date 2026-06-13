@@ -17,7 +17,6 @@
 */
 xy* Rand4Dots(size_t cornerID, xy* pocDot, int imgWidth, int imgHeight)
 {
-	xy* rDots = new xy[4];
 	int centerX, centerY, areaSizeX, areaSizeY, radius;
 
 	switch (cornerID)
@@ -52,7 +51,6 @@ xy* Rand4Dots(size_t cornerID, xy* pocDot, int imgWidth, int imgHeight)
 
 	default:
 		return NULL;
-		break;
 	}
 
 	radius = MIN((int)(areaSizeX / 2), (int)(areaSizeY / 2));
@@ -60,17 +58,17 @@ xy* Rand4Dots(size_t cornerID, xy* pocDot, int imgWidth, int imgHeight)
 
 	if (radius < 2)
 		return NULL;
-	else {
-		rDots[0].x = centerX + radius;
-		rDots[0].y = centerY;
-		rDots[1].x = centerX;
-		rDots[1].y = centerY - radius;
-		rDots[2].x = centerX - radius;
-		rDots[2].y = centerY + 1;
-		rDots[3].x = centerX + 1;
-		rDots[3].y = centerY + radius;
-	}
-	
+
+	xy* rDots = new xy[4]();
+	rDots[0].x = centerX + radius;
+	rDots[0].y = centerY;
+	rDots[1].x = centerX;
+	rDots[1].y = centerY - radius;
+	rDots[2].x = centerX - radius;
+	rDots[2].y = centerY + 1;
+	rDots[3].x = centerX + 1;
+	rDots[3].y = centerY + radius;
+
 	return rDots;
 }
 
@@ -86,7 +84,7 @@ xy* Rand4Dots(size_t cornerID, xy* pocDot, int imgWidth, int imgHeight)
 */
 xy* MatchingDots(size_t cornerID, xy* img1Dots, xy* vec) {
 
-	xy* rDots = new xy[4];
+	xy* rDots = new xy[4]();
 
 	switch (cornerID)
 	{
@@ -153,7 +151,7 @@ xy* MatchingDots(size_t cornerID, xy* img1Dots, xy* vec) {
 */
 xy* PanoDots(xy* prevVec, size_t currCornerID, xy* img1Dots) {
 
-	xy* rDots = new xy[4];
+	xy* rDots = new xy[4]();
 
 	rDots[0].x = img1Dots[0].x + prevVec->x;
 	rDots[0].y = img1Dots[0].y + prevVec->y;

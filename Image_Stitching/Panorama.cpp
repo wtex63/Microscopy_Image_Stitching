@@ -1410,7 +1410,7 @@ BYTE* Filter(BYTE* Raw, double** H, xy position, int Width, int Height, xy newSi
 				for (size_t row = yEnd; row <= point2.y; row++) {
 
 					yTemp--;
-					xTemp = int(xRate * yTemp);
+				 xTemp = int(xRate * yTemp);
 					for (size_t col = xStart; col <= xEnd + xTemp; col++)
 					{
 						bufpos = (height - row - 1) * width * 3 + col * 3;
@@ -1563,6 +1563,8 @@ BYTE* PanaromicImage(double** H, int Width, int Height, xy Size, xy position, BY
 	}
 
 	delete[] SLaplace1;
+	delete[] LaplacePyramid1;
+	delete[] LaplacePyramid2;
 	return panorama;
 }
 

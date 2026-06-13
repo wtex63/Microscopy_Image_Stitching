@@ -8,6 +8,7 @@
 #include "Panorama.h"
 #include "Correlation.h"
 #include "Dots.h"
+#include "Localization.h"
 
 
 namespace Image_Stitching {
@@ -27,9 +28,8 @@ namespace Image_Stitching {
 		Image_Stitching(void)
 		{
 			InitializeComponent();
-			//
-			//TODO: Add the constructor code here
-			//
+			Localization::SetLanguage(Localization::Language::English);
+			ApplyLocalization();
 		}
 
 	protected:
@@ -49,6 +49,9 @@ namespace Image_Stitching {
 	private: System::Windows::Forms::MenuStrip^ menuStrip1;
 	private: System::Windows::Forms::ToolStripMenuItem^ fileToolStripMenuItem;
 	private: System::Windows::Forms::ToolStripMenuItem^ openToolStripMenuItem;
+	private: System::Windows::Forms::ToolStripMenuItem^ languageToolStripMenuItem;
+	private: System::Windows::Forms::ToolStripMenuItem^ englishToolStripMenuItem;
+	private: System::Windows::Forms::ToolStripMenuItem^ turkishToolStripMenuItem;
 	private: System::Windows::Forms::OpenFileDialog^ openFileDialog1;
 	private: System::Windows::Forms::PictureBox^ pictureBox4;
 
@@ -96,8 +99,10 @@ namespace Image_Stitching {
 	private: System::Windows::Forms::Button^ saveButton;
 
 		   void FreePictureBox(PictureBox^ pictureBox) {
-			   delete[] pictureBox->Image;
-			   pictureBox->Image = nullptr;
+			   if (pictureBox->Image != nullptr) {
+				   delete pictureBox->Image;
+				   pictureBox->Image = nullptr;
+			   }
 		   }
 
 		   void ShowColorImage(BYTE* Image, int width, int height) {
@@ -203,6 +208,9 @@ namespace Image_Stitching {
 			   this->menuStrip1 = (gcnew System::Windows::Forms::MenuStrip());
 			   this->fileToolStripMenuItem = (gcnew System::Windows::Forms::ToolStripMenuItem());
 			   this->openToolStripMenuItem = (gcnew System::Windows::Forms::ToolStripMenuItem());
+			   this->languageToolStripMenuItem = (gcnew System::Windows::Forms::ToolStripMenuItem());
+			   this->englishToolStripMenuItem = (gcnew System::Windows::Forms::ToolStripMenuItem());
+			   this->turkishToolStripMenuItem = (gcnew System::Windows::Forms::ToolStripMenuItem());
 			   this->openFileDialog1 = (gcnew System::Windows::Forms::OpenFileDialog());
 			   this->pictureBox4 = (gcnew System::Windows::Forms::PictureBox());
 			   this->labelResultS = (gcnew System::Windows::Forms::Label());
@@ -216,7 +224,7 @@ namespace Image_Stitching {
 			   // menuStrip1
 			   // 
 			   this->menuStrip1->ImageScalingSize = System::Drawing::Size(20, 20);
-			   this->menuStrip1->Items->AddRange(gcnew cli::array< System::Windows::Forms::ToolStripItem^  >(1) { this->fileToolStripMenuItem });
+			   this->menuStrip1->Items->AddRange(gcnew cli::array< System::Windows::Forms::ToolStripItem^  >(2) { this->fileToolStripMenuItem, this->languageToolStripMenuItem });
 			   this->menuStrip1->Location = System::Drawing::Point(0, 0);
 			   this->menuStrip1->Name = L"menuStrip1";
 			   this->menuStrip1->Padding = System::Windows::Forms::Padding(5, 2, 0, 2);
@@ -229,19 +237,40 @@ namespace Image_Stitching {
 			   this->fileToolStripMenuItem->DropDownItems->AddRange(gcnew cli::array< System::Windows::Forms::ToolStripItem^  >(1) { this->openToolStripMenuItem });
 			   this->fileToolStripMenuItem->Name = L"fileToolStripMenuItem";
 			   this->fileToolStripMenuItem->Size = System::Drawing::Size(46, 24);
-			   this->fileToolStripMenuItem->Text = L"File";
+			   this->fileToolStripMenuItem->Text = Localization::T("MenuFile");
 			   // 
 			   // openToolStripMenuItem
 			   // 
 			   this->openToolStripMenuItem->Name = L"openToolStripMenuItem";
 			   this->openToolStripMenuItem->Size = System::Drawing::Size(128, 26);
-			   this->openToolStripMenuItem->Text = L"Open";
+			   this->openToolStripMenuItem->Text = Localization::T("MenuOpen");
 			   this->openToolStripMenuItem->Click += gcnew System::EventHandler(this, &Image_Stitching::openToolStripMenuItem_Click);
+			   // 
+			   // languageToolStripMenuItem
+			   // 
+			   this->languageToolStripMenuItem->DropDownItems->AddRange(gcnew cli::array< System::Windows::Forms::ToolStripItem^  >(2) { this->englishToolStripMenuItem, this->turkishToolStripMenuItem });
+			   this->languageToolStripMenuItem->Name = L"languageToolStripMenuItem";
+			   this->languageToolStripMenuItem->Size = System::Drawing::Size(90, 24);
+			   this->languageToolStripMenuItem->Text = Localization::T("MenuLanguage");
+			   // 
+			   // englishToolStripMenuItem
+			   // 
+			   this->englishToolStripMenuItem->Name = L"englishToolStripMenuItem";
+			   this->englishToolStripMenuItem->Size = System::Drawing::Size(153, 26);
+			   this->englishToolStripMenuItem->Text = Localization::T("MenuEnglish");
+			   this->englishToolStripMenuItem->Click += gcnew System::EventHandler(this, &Image_Stitching::englishToolStripMenuItem_Click);
+			   // 
+			   // turkishToolStripMenuItem
+			   // 
+			   this->turkishToolStripMenuItem->Name = L"turkishToolStripMenuItem";
+			   this->turkishToolStripMenuItem->Size = System::Drawing::Size(153, 26);
+			   this->turkishToolStripMenuItem->Text = Localization::T("MenuTurkish");
+			   this->turkishToolStripMenuItem->Click += gcnew System::EventHandler(this, &Image_Stitching::turkishToolStripMenuItem_Click);
 			   // 
 			   // openFileDialog1
 			   // 
-			   this->openFileDialog1->FileName = L"openFileDialog1";
-			   this->openFileDialog1->Filter = L"bmp files (*.bmp)|*.bmp";
+			   this->openFileDialog1->FileName = Localization::T("OpenDialogFileName");
+			   this->openFileDialog1->Filter = Localization::T("OpenDialogFilter");
 			   this->openFileDialog1->Multiselect = true;
 			   // 
 			   // pictureBox4
@@ -279,7 +308,7 @@ namespace Image_Stitching {
 			   this->label14->Name = L"label14";
 			   this->label14->Size = System::Drawing::Size(58, 17);
 			   this->label14->TabIndex = 34;
-			   this->label14->Text = L"image : ";
+			   this->label14->Text = Localization::T("LabelImage");
 			   // 
 			   // saveButton
 			   // 
@@ -287,7 +316,7 @@ namespace Image_Stitching {
 			   this->saveButton->Name = L"saveButton";
 			   this->saveButton->Size = System::Drawing::Size(72, 36);
 			   this->saveButton->TabIndex = 36;
-			   this->saveButton->Text = L"Save";
+			   this->saveButton->Text = Localization::T("ButtonSave");
 			   this->saveButton->UseVisualStyleBackColor = true;
 			   this->saveButton->Click += gcnew System::EventHandler(this, &Image_Stitching::saveButton_Click);
 			   // 
@@ -305,7 +334,7 @@ namespace Image_Stitching {
 			   this->MainMenuStrip = this->menuStrip1;
 			   this->Margin = System::Windows::Forms::Padding(4);
 			   this->Name = L"Image_Stitching";
-			   this->Text = L"Image Stitching";
+			   this->Text = Localization::T("FormTitle");
 			   this->WindowState = System::Windows::Forms::FormWindowState::Maximized;
 			   this->menuStrip1->ResumeLayout(false);
 			   this->menuStrip1->PerformLayout();
@@ -315,6 +344,31 @@ namespace Image_Stitching {
 
 		   }
 #pragma endregion
+
+	private:
+		void ApplyLocalization() {
+			this->fileToolStripMenuItem->Text = Localization::T("MenuFile");
+			this->openToolStripMenuItem->Text = Localization::T("MenuOpen");
+			this->languageToolStripMenuItem->Text = Localization::T("MenuLanguage");
+			this->englishToolStripMenuItem->Text = Localization::T("MenuEnglish");
+			this->turkishToolStripMenuItem->Text = Localization::T("MenuTurkish");
+			this->saveButton->Text = Localization::T("ButtonSave");
+			this->label14->Text = Localization::T("LabelImage");
+			this->Text = Localization::T("FormTitle");
+			this->openFileDialog1->FileName = Localization::T("OpenDialogFileName");
+			this->openFileDialog1->Filter = Localization::T("OpenDialogFilter");
+		}
+
+	private: System::Void englishToolStripMenuItem_Click(System::Object^ sender, System::EventArgs^ e) {
+		Localization::SetLanguage(Localization::Language::English);
+		ApplyLocalization();
+	}
+
+	private: System::Void turkishToolStripMenuItem_Click(System::Object^ sender, System::EventArgs^ e) {
+		Localization::SetLanguage(Localization::Language::Turkish);
+		ApplyLocalization();
+	}
+
 	private: System::Void openToolStripMenuItem_Click(System::Object^ sender, System::EventArgs^ e) {
 
 		if (openFileDialog1->ShowDialog() == System::Windows::Forms::DialogResult::OK) {
@@ -331,8 +385,8 @@ namespace Image_Stitching {
 				if (imgCounter == 0) {
 
 					CString path1 = openFileDialog1->FileNames[imgCounter];
-					// LoadBMP can read only 24 bit image depth
-					buffer1 = LoadBMP(width, height, size, (LPCTSTR)path1);
+					// LoadImage can read both BMP and JPEG image formats
+					buffer1 = LoadImage(width, height, size, (LPCTSTR)path1);
 					intensity1 = ConvertBMPToIntensity(buffer1, width, height);
 
 					outReal[0] = new double[width * height];
@@ -341,8 +395,8 @@ namespace Image_Stitching {
 
 
 					CString path2 = openFileDialog1->FileNames[imgCounter + 1];
-					// LoadBMP can read only 24 bit image depth
-					buffer2 = LoadBMP(width, height, size, (LPCTSTR)path2);
+					// LoadImage can read both BMP and JPEG image formats
+					buffer2 = LoadImage(width, height, size, (LPCTSTR)path2);
 					intensity2 = ConvertBMPToIntensity(buffer2, width, height);
 
 					outReal[1] = new double[width * height];
@@ -365,7 +419,7 @@ namespace Image_Stitching {
 					xy* img1Dots = Rand4Dots(currCornerID, pocDot, width, height);
 
 					if (img1Dots == NULL) {
-						MessageBox::Show("4 eslesme noktasi bulunamadi");
+						MessageBox::Show(Localization::T("MsgMissingMatches"));
 					}
 					else {
 
@@ -432,8 +486,8 @@ namespace Image_Stitching {
 					outImag[0] = outImag[1];
 
 					CString path = openFileDialog1->FileNames[imgCounter + 1];
-					// LoadBMP can read only 24 bit image depth
-					buffer2 = LoadBMP(width, height, size, (LPCTSTR)path);
+					// LoadImage can read both BMP and JPEG image formats
+					buffer2 = LoadImage(width, height, size, (LPCTSTR)path);
 					intensity2 = ConvertBMPToIntensity(buffer2, width, height);
 
 					outReal[1] = new double[width * height];
@@ -454,7 +508,7 @@ namespace Image_Stitching {
 					xy* img1Dots = Rand4Dots(currCornerID, pocDot, width, height);
 
 					if (img1Dots == NULL) {
-						MessageBox::Show("4 eslesme noktasi bulunamadi");
+						MessageBox::Show(Localization::T("MsgMissingMatches"));
 					}
 					else {
 						xy* img2Dots = MatchingDots(currCornerID, img1Dots, currVec);
@@ -525,7 +579,7 @@ namespace Image_Stitching {
 
 	private: System::Void saveButton_Click(System::Object^ sender, System::EventArgs^ e) {
 		this->pictureBox4->Image->Save("..\\SavedImg_" + (imgCounter + 1).ToString() + ".bmp");
-		MessageBox::Show("SavedImg_" + (imgCounter + 1).ToString() + ".bmp kaydedildi.");
+		MessageBox::Show(String::Format(Localization::T("MsgSavedImage"), (imgCounter + 1).ToString()));
 	}
 	};
 }
