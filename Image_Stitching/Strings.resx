@@ -22,6 +22,10 @@
   <data name="FormTitle" xml:space="preserve"><value>Image Stitching</value></data>
   <data name="LabelImage" xml:space="preserve"><value>image :</value></data>
   <data name="ButtonSave" xml:space="preserve"><value>Save</value></data>
+  <data name="BlendModeLabel" xml:space="preserve"><value>Blend :</value></data>
+  <data name="BlendModeAuto" xml:space="preserve"><value>Auto</value></data>
+  <data name="BlendModeQuality" xml:space="preserve"><value>Quality</value></data>
+  <data name="BlendModeSpeed" xml:space="preserve"><value>Speed</value></data>
 
   <data name="OpenDialogFileName" xml:space="preserve"><value>openFileDialog1</value></data>
   <data name="OpenDialogFilter" xml:space="preserve"><value>Image files (*.bmp;*.jpg;*.jpeg)|*.bmp;*.jpg;*.jpeg|BMP files (*.bmp)|*.bmp|JPEG files (*.jpg;*.jpeg)|*.jpg;*.jpeg|All files (*.*)|*.*</value></data>

@@ -16,6 +16,7 @@ namespace Image_Stitching {
 	using namespace System;
 	using namespace System::ComponentModel;
 	using namespace System::Collections;
+	using namespace System::Collections::Generic;
 	using namespace System::Windows::Forms;
 	using namespace System::Data;
 	using namespace System::Drawing;
@@ -27,11 +28,27 @@ namespace Image_Stitching {
 	public ref class Image_Stitching : public System::Windows::Forms::Form
 	{
 	public:
+		enum class BlendMode
+		{
+			Auto = 0,
+			Quality = 1,
+			Speed = 2
+		};
+
 		Image_Stitching(void)
 		{
 			InitializeComponent();
 			Localization::SetLanguage(Localization::Language::English);
 			ApplyLocalization();
+			ConfigureStartupArguments(Environment::GetCommandLineArgs());
+		}
+
+		Image_Stitching(array<String^>^ args)
+		{
+			InitializeComponent();
+			Localization::SetLanguage(Localization::Language::English);
+			ApplyLocalization();
+			ConfigureStartupArguments(args);
 		}
 
     // Show the prepared full-resolution preview form prepared by ShowMatchVisualization
@@ -199,7 +216,18 @@ namespace Image_Stitching {
 	private: System::Windows::Forms::Button^ saveButton;
 	private: System::Windows::Forms::CheckBox^ autoClosePreviewChk;
 	private: System::Windows::Forms::CheckBox^ useGpuPhaseChk;
+	private: System::Windows::Forms::Label^ blendModeLbl;
+	private: System::Windows::Forms::ComboBox^ blendModeCombo;
 	private: System::Windows::Forms::Form^ previewFullResForm = nullptr;
+	private: array<String^>^ startupInputFiles = nullptr;
+	private: String^ startupLogPath = nullptr;
+	private: bool startupAutoRun = false;
+	private: bool startupUseGpu = false;
+	private: bool startupAutoClosePreview = false;
+	private: bool startupExitWhenDone = false;
+	private: bool startupRunStarted = false;
+	private: String^ startupArgsError = nullptr;
+	private: BlendMode startupBlendMode = BlendMode::Auto;
 
 		   void FreePictureBox(PictureBox^ pictureBox) {
 			   if (pictureBox->Image != nullptr) {
@@ -208,11 +236,163 @@ namespace Image_Stitching {
 			   }
 		   }
 
+		   String^ GetDefaultBatchLogPath() {
+			   String^ mode = startupUseGpu ? "gpu" : "cpu";
+			   String^ dir = Path::Combine(Application::StartupPath, "speed_logs");
+			   String^ fileName = String::Format("stitch_{0}_{1}.log", mode, DateTime::Now.ToString("yyyyMMdd_HHmmss"));
+			   return Path::Combine(dir, fileName);
+		   }
+
+		   String^ GetBlendModeName(BlendMode mode) {
+			   switch (mode) {
+			   case BlendMode::Quality:
+				   return "quality";
+			   case BlendMode::Speed:
+				   return "speed";
+			   default:
+				   return "auto";
+			   }
+		   }
+
+		   BlendMode GetRequestedBlendMode() {
+			   if (blendModeCombo != nullptr) {
+				   switch (blendModeCombo->SelectedIndex) {
+				   case 1:
+					   return BlendMode::Quality;
+				   case 2:
+					   return BlendMode::Speed;
+				   default:
+					   return BlendMode::Auto;
+				   }
+			   }
+			   return startupBlendMode;
+		   }
+
+		   void SetBlendModeSelection(BlendMode mode) {
+			   if (blendModeCombo == nullptr)
+				   return;
+			   switch (mode) {
+			   case BlendMode::Quality:
+				   blendModeCombo->SelectedIndex = 1;
+				   break;
+			   case BlendMode::Speed:
+				   blendModeCombo->SelectedIndex = 2;
+				   break;
+			   default:
+				   blendModeCombo->SelectedIndex = 0;
+				   break;
+			   }
+		   }
+
+		   BlendMode ResolveBlendMode(bool useTranslationModel) {
+			   BlendMode requestedBlendMode = GetRequestedBlendMode();
+			   if (requestedBlendMode == BlendMode::Quality)
+				   return BlendMode::Quality;
+			   if (requestedBlendMode == BlendMode::Speed)
+				   return BlendMode::Speed;
+			   if (useTranslationModel && (this->useGpuPhaseChk != nullptr && this->useGpuPhaseChk->Checked) && IsPhaseCorrelationGpuAvailable())
+				   return BlendMode::Speed;
+			   return BlendMode::Quality;
+		   }
+
+		   void ConfigureStartupArguments(array<String^>^ args) {
+			   this->Shown += gcnew EventHandler(this, &Image_Stitching::OnStartupShown);
+			   if (args == nullptr || args->Length <= 1)
+				   return;
+
+			   List<String^>^ files = gcnew List<String^>();
+			   for (int i = 1; i < args->Length; i++) {
+				   String^ arg = args[i];
+				   if (String::IsNullOrWhiteSpace(arg))
+					   continue;
+
+				   if (String::Equals(arg, "--input", StringComparison::OrdinalIgnoreCase) || String::Equals(arg, "-i", StringComparison::OrdinalIgnoreCase)) {
+					   if (i + 1 >= args->Length) {
+						   startupArgsError = "Missing value for --input argument.";
+						   break;
+					   }
+					   files->Add(args[++i]);
+				   }
+				   else if (String::Equals(arg, "--log", StringComparison::OrdinalIgnoreCase) || String::Equals(arg, "-l", StringComparison::OrdinalIgnoreCase)) {
+					   if (i + 1 >= args->Length) {
+						   startupArgsError = "Missing value for --log argument.";
+						   break;
+					   }
+					   startupLogPath = args[++i];
+				   }
+				   else if (String::Equals(arg, "--autoclosepreview", StringComparison::OrdinalIgnoreCase)) {
+					   startupAutoClosePreview = true;
+				   }
+				   else if (String::Equals(arg, "--gpu", StringComparison::OrdinalIgnoreCase)) {
+					   startupUseGpu = true;
+				   }
+				   else if (String::Equals(arg, "--cpu", StringComparison::OrdinalIgnoreCase)) {
+					   startupUseGpu = false;
+				   }
+				   else if (String::Equals(arg, "--exit", StringComparison::OrdinalIgnoreCase)) {
+					   startupExitWhenDone = true;
+				   }
+				   else if (String::Equals(arg, "--blend", StringComparison::OrdinalIgnoreCase)) {
+					   if (i + 1 >= args->Length) {
+						   startupArgsError = "Missing value for --blend argument.";
+						   break;
+					   }
+					   String^ blendValue = args[++i];
+					   if (String::Equals(blendValue, "auto", StringComparison::OrdinalIgnoreCase))
+						   startupBlendMode = BlendMode::Auto;
+					   else if (String::Equals(blendValue, "quality", StringComparison::OrdinalIgnoreCase))
+						   startupBlendMode = BlendMode::Quality;
+					   else if (String::Equals(blendValue, "speed", StringComparison::OrdinalIgnoreCase))
+						   startupBlendMode = BlendMode::Speed;
+					   else {
+						   startupArgsError = "Invalid value for --blend. Use auto, quality, or speed.";
+						   break;
+					   }
+				   }
+			   }
+
+			   if (files->Count > 0) {
+				   startupAutoRun = true;
+				   startupInputFiles = files->ToArray();
+				   if (String::IsNullOrWhiteSpace(startupLogPath))
+					   startupLogPath = GetDefaultBatchLogPath();
+			   }
+		   }
+
+		   System::Void OnStartupShown(System::Object^ sender, System::EventArgs^ e) {
+			   if (!startupAutoRun || startupRunStarted)
+				   return;
+
+			   startupRunStarted = true;
+			   if (this->autoClosePreviewChk != nullptr)
+				   this->autoClosePreviewChk->Checked = startupAutoClosePreview;
+			   if (this->useGpuPhaseChk != nullptr)
+				   this->useGpuPhaseChk->Checked = startupUseGpu;
+			   SetBlendModeSelection(startupBlendMode);
+
+			   this->BeginInvoke(gcnew MethodInvoker(this, &Image_Stitching::RunStartupAutomation));
+		   }
+
+		   void RunStartupAutomation() {
+			   openToolStripMenuItem_Click(nullptr, EventArgs::Empty);
+		   }
+
 		   void AppendLog(String^ message) {
 			   if (logTextBox == nullptr) return;
-			   logTextBox->AppendText(DateTime::Now.ToString("HH:mm:ss") + " - " + message + Environment::NewLine);
+			   String^ line = DateTime::Now.ToString("HH:mm:ss") + " - " + message;
+			   logTextBox->AppendText(line + Environment::NewLine);
 			   logTextBox->SelectionStart = logTextBox->TextLength;
 			   logTextBox->ScrollToCaret();
+			   if (startupAutoRun && !String::IsNullOrWhiteSpace(startupLogPath)) {
+				   try {
+					   String^ fullPath = Path::GetFullPath(startupLogPath);
+					   String^ dir = Path::GetDirectoryName(fullPath);
+					   if (!String::IsNullOrWhiteSpace(dir))
+						   Directory::CreateDirectory(dir);
+					   File::AppendAllText(fullPath, line + Environment::NewLine);
+				   }
+				   catch (...) {}
+			   }
 			   Application::DoEvents();
 		   }
 
@@ -786,6 +966,8 @@ namespace Image_Stitching {
 			   this->saveButton = (gcnew System::Windows::Forms::Button());
                this->autoClosePreviewChk = (gcnew System::Windows::Forms::CheckBox());
 			   this->useGpuPhaseChk = (gcnew System::Windows::Forms::CheckBox());
+			   this->blendModeLbl = (gcnew System::Windows::Forms::Label());
+			   this->blendModeCombo = (gcnew System::Windows::Forms::ComboBox());
 			   this->statusPanel = (gcnew System::Windows::Forms::Panel());
 			   this->statusTitleLbl = (gcnew System::Windows::Forms::Label());
 			   this->statusConfidenceLbl = (gcnew System::Windows::Forms::Label());
@@ -816,6 +998,22 @@ namespace Image_Stitching {
 		this->useGpuPhaseChk->Text = L"Use GPU phase backend";
 		this->useGpuPhaseChk->AutoSize = true;
 		this->useGpuPhaseChk->Checked = false;
+		// blendModeLbl
+		this->blendModeLbl->AutoSize = true;
+		this->blendModeLbl->Location = System::Drawing::Point(260, 50);
+		this->blendModeLbl->Name = L"blendModeLbl";
+		this->blendModeLbl->Size = System::Drawing::Size(43, 17);
+		this->blendModeLbl->TabIndex = 40;
+		this->blendModeLbl->Text = L"Blend";
+		// blendModeCombo
+		this->blendModeCombo->DropDownStyle = System::Windows::Forms::ComboBoxStyle::DropDownList;
+		this->blendModeCombo->FormattingEnabled = true;
+		this->blendModeCombo->Items->AddRange(gcnew cli::array< System::Object^  >(3) { L"Auto", L"Quality", L"Speed" });
+		this->blendModeCombo->Location = System::Drawing::Point(315, 46);
+		this->blendModeCombo->Name = L"blendModeCombo";
+		this->blendModeCombo->Size = System::Drawing::Size(130, 24);
+		this->blendModeCombo->TabIndex = 41;
+		this->blendModeCombo->SelectedIndex = 0;
 			   (cli::safe_cast<System::ComponentModel::ISupportInitialize^>(this->pictureBox4))->BeginInit();
 			   this->SuspendLayout();
 			   // 
@@ -1051,6 +1249,8 @@ namespace Image_Stitching {
 			   this->Controls->Add(this->saveButton);
 			   this->Controls->Add(this->autoClosePreviewChk);
 			   this->Controls->Add(this->useGpuPhaseChk);
+			   this->Controls->Add(this->blendModeCombo);
+			   this->Controls->Add(this->blendModeLbl);
 			   this->Controls->Add(this->imgIndexLbl);
 			   this->Controls->Add(this->label14);
 			   this->Controls->Add(this->labelResultS);
@@ -1088,6 +1288,18 @@ namespace Image_Stitching {
 			this->autoClosePreviewChk->Text = Localization::T("AutoClosePreview");
 		if (this->useGpuPhaseChk != nullptr)
 			this->useGpuPhaseChk->Text = L"Use GPU phase backend";
+		if (this->blendModeLbl != nullptr)
+			this->blendModeLbl->Text = Localization::T("BlendModeLabel");
+		if (this->blendModeCombo != nullptr) {
+			int selectedIndex = this->blendModeCombo->SelectedIndex;
+			this->blendModeCombo->Items->Clear();
+			this->blendModeCombo->Items->Add(Localization::T("BlendModeAuto"));
+			this->blendModeCombo->Items->Add(Localization::T("BlendModeQuality"));
+			this->blendModeCombo->Items->Add(Localization::T("BlendModeSpeed"));
+			if (selectedIndex < 0 || selectedIndex > 2)
+				selectedIndex = 0;
+			this->blendModeCombo->SelectedIndex = selectedIndex;
+		}
 			this->statusTitleLbl->Text = Localization::T("StatusTitle");
 			this->statusConfidenceLbl->Text = Localization::T("StatusConfidence");
 			this->statusInlierLbl->Text = Localization::T("StatusInlierRatio");
@@ -1118,16 +1330,35 @@ namespace Image_Stitching {
 		try {
 		this->UseWaitCursor = false;
 		System::Windows::Forms::Cursor::Current = Cursors::Default;
-		openFileDialog1->RestoreDirectory = true;
-		openFileDialog1->CheckFileExists = true;
-		openFileDialog1->CheckPathExists = true;
-		openFileDialog1->ValidateNames = true;
-		openFileDialog1->FileName = String::Empty;
-		if (String::IsNullOrWhiteSpace(openFileDialog1->InitialDirectory)) {
-			openFileDialog1->InitialDirectory = Environment::GetFolderPath(Environment::SpecialFolder::MyPictures);
+		array<String^>^ selectedFiles = nullptr;
+		if (startupAutoRun && startupInputFiles != nullptr && startupInputFiles->Length > 0) {
+			selectedFiles = startupInputFiles;
+			if (!String::IsNullOrWhiteSpace(startupArgsError))
+				AppendLog(String::Format("Startup argument error: {0}", startupArgsError));
+			if (logTextBox != nullptr) logTextBox->Clear();
+			AppendLog(String::Format("Batch mode: inputs={0}, requested backend={1}, blend={2}, autoClosePreview={3}, log={4}",
+				selectedFiles->Length,
+				(this->useGpuPhaseChk != nullptr && this->useGpuPhaseChk->Checked) ? "GPU" : "CPU",
+				GetBlendModeName(startupBlendMode),
+				(this->autoClosePreviewChk != nullptr && this->autoClosePreviewChk->Checked) ? "true" : "false",
+				Path::GetFullPath(startupLogPath)));
+		}
+		else {
+			openFileDialog1->RestoreDirectory = true;
+			openFileDialog1->CheckFileExists = true;
+			openFileDialog1->CheckPathExists = true;
+			openFileDialog1->ValidateNames = true;
+			openFileDialog1->FileName = String::Empty;
+			if (String::IsNullOrWhiteSpace(openFileDialog1->InitialDirectory)) {
+				openFileDialog1->InitialDirectory = Environment::GetFolderPath(Environment::SpecialFolder::MyPictures);
+			}
+
+			if (openFileDialog1->ShowDialog(this) == System::Windows::Forms::DialogResult::OK) {
+				selectedFiles = openFileDialog1->FileNames;
+			}
 		}
 
-		if (openFileDialog1->ShowDialog(this) == System::Windows::Forms::DialogResult::OK) {
+		if (selectedFiles != nullptr) {
 
 			long size;
 			int width, height;
@@ -1136,9 +1367,12 @@ namespace Image_Stitching {
 			xy position;
 			bool stitchAborted = false;
 			String^ abortMessage = nullptr;
-			int selectedCount = openFileDialog1->FileNames->GetLength(0);
+			int selectedCount = selectedFiles->GetLength(0);
 			if (selectedCount < 2) {
-				MessageBox::Show("Please select at least two images to stitch.");
+				if (!startupAutoRun)
+					MessageBox::Show("Please select at least two images to stitch.");
+				else
+					AppendLog("Please select at least two images to stitch.");
 				return;
 			}
 			SetPhaseCorrelationBackend((this->useGpuPhaseChk != nullptr && this->useGpuPhaseChk->Checked)
@@ -1150,8 +1384,8 @@ namespace Image_Stitching {
 			if (logTextBox != nullptr) logTextBox->Clear();
 			AppendLog(String::Format(Localization::T("LogStitchStart"), totalPairs));
 			AppendLog(String::Format("Phase backend: {0}", gcnew String(GetPhaseCorrelationBackendName())));
-			if (!IsPhaseCorrelationGpuAvailable()) {
-				AppendLog("GPU phase backend is not compiled in this build; using CPU fallback.");
+			if (this->useGpuPhaseChk != nullptr && this->useGpuPhaseChk->Checked && !IsPhaseCorrelationGpuAvailable()) {
+				AppendLog("GPU backend unavailable on this build/device (CUDA/OpenCL not active); using CPU fallback.");
 			}
 			latestColorOutput = DeleteByteArray(latestColorOutput);
 			latestColorWidth = 0;
@@ -1184,28 +1418,31 @@ namespace Image_Stitching {
 				match2[i] = new double[4];
 			}
 
-			while (imgCounter < openFileDialog1->FileNames->GetLength(0) - 1) {
+			while (imgCounter < selectedFiles->GetLength(0) - 1) {
 				double pairFft1Ms = -1.0;
 				double pairFft2Ms = -1.0;
 				double pairPhaseMs = -1.0;
 				double pairFallbackMs = -1.0;
+				double pairFallbackLocalMs = -1.0;
+				double pairFallbackGlobalMs = -1.0;
+				double pairFallbackEdgeMs = -1.0;
 				double pairBlendMs = -1.0;
 				AppendLog(String::Format(Localization::T("LogProcessingPair"), imgCounter + 1, totalPairs));
 
 				if (imgCounter == 0) {
 					AppendLog(Localization::T("LogLoadingFirstTwo"));
-					CString path1 = openFileDialog1->FileNames[imgCounter];
+					CString path1 = selectedFiles[imgCounter];
 					buffer1 = LoadImage(width, height, size, (LPCTSTR)path1);
 					if (buffer1 == nullptr) {
 						stitchAborted = true;
-						abortMessage = String::Format("Failed to load image: {0}", openFileDialog1->FileNames[imgCounter]);
+						abortMessage = String::Format("Failed to load image: {0}", selectedFiles[imgCounter]);
 						AppendLog(abortMessage);
 						break;
 					}
 					intensity1 = ConvertBMPToIntensity(buffer1, width, height);
 					if (intensity1 == nullptr) {
 						stitchAborted = true;
-						abortMessage = String::Format("Failed to convert image intensity: {0}", openFileDialog1->FileNames[imgCounter]);
+						abortMessage = String::Format("Failed to convert image intensity: {0}", selectedFiles[imgCounter]);
 						AppendLog(abortMessage);
 						break;
 					}
@@ -1220,12 +1457,12 @@ namespace Image_Stitching {
 					auto tFft1End = std::chrono::high_resolution_clock::now();
 					pairFft1Ms = std::chrono::duration_cast<std::chrono::duration<double, std::milli>>(tFft1End - tFft1Start).count();
 
-					CString path2 = openFileDialog1->FileNames[imgCounter + 1];
+					CString path2 = selectedFiles[imgCounter + 1];
 					int nextWidth = 0, nextHeight = 0;
 					buffer2 = LoadImage(nextWidth, nextHeight, size, (LPCTSTR)path2);
 					if (buffer2 == nullptr) {
 						stitchAborted = true;
-						abortMessage = String::Format("Failed to load image: {0}", openFileDialog1->FileNames[imgCounter + 1]);
+						abortMessage = String::Format("Failed to load image: {0}", selectedFiles[imgCounter + 1]);
 						AppendLog(abortMessage);
 						break;
 					}
@@ -1238,7 +1475,7 @@ namespace Image_Stitching {
 					intensity2 = ConvertBMPToIntensity(buffer2, expectedWidth, expectedHeight);
 					if (intensity2 == nullptr) {
 						stitchAborted = true;
-						abortMessage = String::Format("Failed to convert image intensity: {0}", openFileDialog1->FileNames[imgCounter + 1]);
+						abortMessage = String::Format("Failed to convert image intensity: {0}", selectedFiles[imgCounter + 1]);
 						AppendLog(abortMessage);
 						break;
 					}
@@ -1275,6 +1512,9 @@ namespace Image_Stitching {
 					double fallbackGlobalMs = -1.0;
 					double fallbackEdgeMs = -1.0;
 					currCornerID = ZoneDetection(intensity1, intensity2, width, height, currVec, pocDot, &signedShift, &signedRotationDeg, &fallbackCandidateScore, &fallbackCandidateObjective, &fallbackCandidateApplied, &fallbackLocalMs, &fallbackGlobalMs, &fallbackEdgeMs);
+					pairFallbackLocalMs = fallbackLocalMs;
+					pairFallbackGlobalMs = fallbackGlobalMs;
+					pairFallbackEdgeMs = fallbackEdgeMs;
 					pairFallbackMs = 0.0;
 					if (fallbackLocalMs > 0.0) pairFallbackMs += fallbackLocalMs;
 					if (fallbackGlobalMs > 0.0) pairFallbackMs += fallbackGlobalMs;
@@ -1350,7 +1590,8 @@ namespace Image_Stitching {
 					if (img1Dots == NULL || img2Dots == NULL) {
 						if (!useDirectTranslationHomography) {
 							AppendLog(Localization::T("LogMatchFailed"));
-							MessageBox::Show(Localization::T("MsgMissingMatches"));
+							if (!startupAutoRun)
+								MessageBox::Show(Localization::T("MsgMissingMatches"));
 						}
 						else {
 							AppendLog("Point-pair matching unavailable; using direct translation homography.");
@@ -1361,8 +1602,13 @@ namespace Image_Stitching {
 						double** homography = nullptr;
 						if (!useDirectTranslationHomography) {
 							AppendLog(Localization::T("LogMatchingHomography"));
-							ShowMatchVisualization(intensity1, intensity2, width, height, img1Dots, img2Dots);
-							AppendLog("Match visualization closed - proceeding with panorama generation");
+							if (!startupAutoRun) {
+								ShowMatchVisualization(intensity1, intensity2, width, height, img1Dots, img2Dots);
+								AppendLog("Match visualization closed - proceeding with panorama generation");
+							}
+							else {
+								AppendLog("Batch mode: skipping match visualization.");
+							}
 
 							for (int i = 0; i < 4; i++) {
 								match1[0][i] = double(img1Dots[i].x);
@@ -1395,9 +1641,18 @@ namespace Image_Stitching {
 
 							AppendLog(Localization::T("LogBlendingPanorama"));
 							auto tBlendStart = std::chrono::high_resolution_clock::now();
-							LaplacePyramid(homography, buffer1, buffer2, width, height, width, height, LaplacePyramid1, LaplacePyramid2, width1, height1, *currPanoSize, position);
-							panorama1 = PanaromicImage(homography, width, height, *currPanoSize, position, LaplacePyramid1, LaplacePyramid2, width1, height1, width, height, isFirstLine, currCornerID, currVec);
-							ShowColorImage(panorama1, currPanoSize->x, currPanoSize->y);
+							BlendMode resolvedBlendMode = ResolveBlendMode(useTranslationModel);
+							if (resolvedBlendMode == BlendMode::Speed) {
+								AppendLog("Using fast translation blend path.");
+								panorama1 = FastTranslationBlend(homography, buffer1, buffer2, width, height, width, height, *currPanoSize, position);
+							}
+							else {
+								AppendLog("Using Laplacian blend path.");
+								LaplacePyramid(homography, buffer1, buffer2, width, height, width, height, LaplacePyramid1, LaplacePyramid2, width1, height1, *currPanoSize, position);
+								panorama1 = PanaromicImage(homography, width, height, *currPanoSize, position, LaplacePyramid1, LaplacePyramid2, width1, height1, width, height, isFirstLine, currCornerID, currVec);
+							}
+							if (!startupAutoRun)
+								ShowColorImage(panorama1, currPanoSize->x, currPanoSize->y);
 							auto tBlendEnd = std::chrono::high_resolution_clock::now();
 							pairBlendMs = std::chrono::duration_cast<std::chrono::duration<double, std::milli>>(tBlendEnd - tBlendStart).count();
 							AppendLog(String::Format(Localization::T("LogPanoramaUpdated"), currPanoSize->x, currPanoSize->y));
@@ -1428,12 +1683,12 @@ namespace Image_Stitching {
 					outReal[0] = outReal[1];
 					outImag[0] = outImag[1];
 
-					CString path = openFileDialog1->FileNames[imgCounter + 1];
+					CString path = selectedFiles[imgCounter + 1];
 					int nextWidth = 0, nextHeight = 0;
 					buffer2 = LoadImage(nextWidth, nextHeight, size, (LPCTSTR)path);
 					if (buffer2 == nullptr) {
 						stitchAborted = true;
-						abortMessage = String::Format("Failed to load image: {0}", openFileDialog1->FileNames[imgCounter + 1]);
+						abortMessage = String::Format("Failed to load image: {0}", selectedFiles[imgCounter + 1]);
 						AppendLog(abortMessage);
 						break;
 					}
@@ -1446,7 +1701,7 @@ namespace Image_Stitching {
 					intensity2 = ConvertBMPToIntensity(buffer2, expectedWidth, expectedHeight);
 					if (intensity2 == nullptr) {
 						stitchAborted = true;
-						abortMessage = String::Format("Failed to convert image intensity: {0}", openFileDialog1->FileNames[imgCounter + 1]);
+						abortMessage = String::Format("Failed to convert image intensity: {0}", selectedFiles[imgCounter + 1]);
 						AppendLog(abortMessage);
 						break;
 					}
@@ -1484,6 +1739,9 @@ namespace Image_Stitching {
 						double fallbackGlobalMs = -1.0;
 						double fallbackEdgeMs = -1.0;
 						currCornerID = ZoneDetection(intensity1, intensity2, width, height, currVec, pocDot, &signedShift, &signedRotationDeg, &fallbackCandidateScore, &fallbackCandidateObjective, &fallbackCandidateApplied, &fallbackLocalMs, &fallbackGlobalMs, &fallbackEdgeMs);
+						pairFallbackLocalMs = fallbackLocalMs;
+						pairFallbackGlobalMs = fallbackGlobalMs;
+						pairFallbackEdgeMs = fallbackEdgeMs;
 						pairFallbackMs = 0.0;
 						if (fallbackLocalMs > 0.0) pairFallbackMs += fallbackLocalMs;
 						if (fallbackGlobalMs > 0.0) pairFallbackMs += fallbackGlobalMs;
@@ -1557,12 +1815,18 @@ namespace Image_Stitching {
 
 					if (img1Dots == NULL || img2Dots == NULL) {
 						AppendLog(Localization::T("LogMatchFailed"));
-						MessageBox::Show(Localization::T("MsgMissingMatches"));
+						if (!startupAutoRun)
+							MessageBox::Show(Localization::T("MsgMissingMatches"));
 					}
 					else {
 						AppendLog(Localization::T("LogMatchingHomography"));
-						ShowMatchVisualization(intensity1, intensity2, width, height, img1Dots, img2Dots);
-						AppendLog("Match visualization closed - proceeding with panorama generation");
+						if (!startupAutoRun) {
+							ShowMatchVisualization(intensity1, intensity2, width, height, img1Dots, img2Dots);
+							AppendLog("Match visualization closed - proceeding with panorama generation");
+						}
+						else {
+							AppendLog("Batch mode: skipping match visualization.");
+						}
 						LineUpdate(currCornerID, currVec);
 						xy* img1PanoDots = PanoDots(prevVec, currCornerID, img1Dots);
 
@@ -1591,9 +1855,18 @@ namespace Image_Stitching {
 
 							AppendLog(Localization::T("LogBlendingPanorama"));
 							auto tBlendStart = std::chrono::high_resolution_clock::now();
-							LaplacePyramid(homography, panorama1, buffer2, prevPanoSize->x, prevPanoSize->y, width, height, LaplacePyramid1, LaplacePyramid2, width1, height1, *currPanoSize, position);
-							panorama2 = PanaromicImage(homography, prevPanoSize->x, prevPanoSize->y, *currPanoSize, position, LaplacePyramid1, LaplacePyramid2, width1, height1, width, height, isFirstLine, currCornerID, currVec);
-							ShowColorImage(panorama2, currPanoSize->x, currPanoSize->y);
+							BlendMode resolvedBlendMode = ResolveBlendMode(useTranslationModel);
+							if (resolvedBlendMode == BlendMode::Speed) {
+								AppendLog("Using fast translation blend path.");
+								panorama2 = FastTranslationBlend(homography, panorama1, buffer2, prevPanoSize->x, prevPanoSize->y, width, height, *currPanoSize, position);
+							}
+							else {
+								AppendLog("Using Laplacian blend path.");
+								LaplacePyramid(homography, panorama1, buffer2, prevPanoSize->x, prevPanoSize->y, width, height, LaplacePyramid1, LaplacePyramid2, width1, height1, *currPanoSize, position);
+								panorama2 = PanaromicImage(homography, prevPanoSize->x, prevPanoSize->y, *currPanoSize, position, LaplacePyramid1, LaplacePyramid2, width1, height1, width, height, isFirstLine, currCornerID, currVec);
+							}
+							if (!startupAutoRun)
+								ShowColorImage(panorama2, currPanoSize->x, currPanoSize->y);
 							auto tBlendEnd = std::chrono::high_resolution_clock::now();
 							pairBlendMs = std::chrono::duration_cast<std::chrono::duration<double, std::milli>>(tBlendEnd - tBlendStart).count();
 							AppendLog(String::Format(Localization::T("LogPanoramaUpdated"), currPanoSize->x, currPanoSize->y));
@@ -1629,8 +1902,12 @@ namespace Image_Stitching {
 				String^ fft2Text = (pairFft2Ms >= 0.0) ? pairFft2Ms.ToString("F0") + " ms" : "n/a";
 				String^ phaseText = (pairPhaseMs >= 0.0) ? pairPhaseMs.ToString("F0") + " ms" : "n/a";
 				String^ fallbackText = (pairFallbackMs >= 0.0) ? pairFallbackMs.ToString("F0") + " ms" : "n/a";
+				String^ fallbackLocalText = (pairFallbackLocalMs >= 0.0) ? pairFallbackLocalMs.ToString("F0") + " ms" : "n/a";
+				String^ fallbackGlobalText = (pairFallbackGlobalMs >= 0.0) ? pairFallbackGlobalMs.ToString("F0") + " ms" : "n/a";
+				String^ fallbackEdgeText = (pairFallbackEdgeMs >= 0.0) ? pairFallbackEdgeMs.ToString("F0") + " ms" : "n/a";
 				String^ blendText = (pairBlendMs >= 0.0) ? pairBlendMs.ToString("F0") + " ms" : "n/a";
 				AppendLog(String::Format("Pair timing summary: FFT1={0}, FFT2={1}, Phase={2}, Fallback={3}, Blend={4}", fft1Text, fft2Text, phaseText, fallbackText, blendText));
+				AppendLog(String::Format("Fallback breakdown: local={0}, global={1}, edge/refine={2}", fallbackLocalText, fallbackGlobalText, fallbackEdgeText));
 				AppendLog(String::Format(Localization::T("LogFinishedPair"), imgCounter, totalPairs));
 				imgIndexLbl->Text = (imgCounter + 1).ToString();
 				imgIndexLbl->Refresh();
@@ -1642,11 +1919,17 @@ namespace Image_Stitching {
 			UpdateStatusPanel(nullptr, statusPhaseConfidence, statusInlierRatio, statusInlierRatio >= 0.0);
 			if (stitchAborted) {
 				if (abortMessage != nullptr)
-					MessageBox::Show(abortMessage);
+					if (!startupAutoRun)
+						MessageBox::Show(abortMessage);
 				AppendLog("Stitching aborted due to invalid input.");
 			}
 			else {
 				AppendLog(Localization::T("LogCompleted"));
+			}
+
+			if (startupAutoRun && startupExitWhenDone) {
+				AppendLog("Batch mode run complete. Exiting application.");
+				Close();
 			}
 
 			panorama1 = DeleteByteArray(panorama1);
@@ -1666,14 +1949,17 @@ namespace Image_Stitching {
 		catch (Exception^ ex) {
 			stitchTimerActive = false;
 			AppendLog(String::Format("Open/stitch exception: {0}", ex->Message));
-			MessageBox::Show(
-				String::Format(Localization::T("MsgAppError"), ex->Message, ex->StackTrace),
-				Localization::T("MsgAppErrorTitle"));
+			if (!startupAutoRun) {
+				MessageBox::Show(
+					String::Format(Localization::T("MsgAppError"), ex->Message, ex->StackTrace),
+					Localization::T("MsgAppErrorTitle"));
+			}
 		}
 		catch (...) {
 			stitchTimerActive = false;
 			AppendLog("Open/stitch exception: unknown native exception.");
-			MessageBox::Show(Localization::T("MsgUnknownError"), Localization::T("MsgAppErrorTitle"));
+			if (!startupAutoRun)
+				MessageBox::Show(Localization::T("MsgUnknownError"), Localization::T("MsgAppErrorTitle"));
 		}
 	}
 

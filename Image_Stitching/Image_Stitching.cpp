@@ -12,7 +12,7 @@ int ManagedMain(array<String^>^ args)
 	try {
 		Application::EnableVisualStyles();
 		Application::SetCompatibleTextRenderingDefault(false);
-		Image_Stitching::Image_Stitching form;
+		Image_Stitching::Image_Stitching form(args);
 		Application::Run(%form);
 		return 0;
 	}

@@ -76,7 +76,22 @@
   <ImportGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'" Label="PropertySheets">
     <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
   </ImportGroup>
-  <PropertyGroup Label="UserMacros" />
+  <PropertyGroup Label="UserMacros">
+    <EnableOpenCVCuda Condition="'$(EnableOpenCVCuda)'==''">false</EnableOpenCVCuda>
+    <EnableOpenCVOpenCL Condition="'$(EnableOpenCVOpenCL)'==''">true</EnableOpenCVOpenCL>
+    <OpenCVDir Condition="'$(OpenCVDir)'=='' and Exists('C:\opencv\build')">C:\opencv\build</OpenCVDir>
+    <OpenCVDir Condition="'$(OpenCVDir)'==''">$(OPENCV_DIR)</OpenCVDir>
+    <OpenCVIncludeDir Condition="'$(OpenCVIncludeDir)'=='' and Exists('C:\opencv\build\include')">C:\opencv\build\include</OpenCVIncludeDir>
+    <OpenCVLibDir Condition="'$(OpenCVLibDir)'=='' and Exists('C:\opencv\build\x64\vc16\lib')">C:\opencv\build\x64\vc16\lib</OpenCVLibDir>
+    <OpenCVBinDir Condition="'$(OpenCVBinDir)'=='' and Exists('C:\opencv\build\x64\vc16\bin')">C:\opencv\build\x64\vc16\bin</OpenCVBinDir>
+    <OpenCVIncludeDir Condition="'$(OpenCVIncludeDir)'=='' and '$(OpenCVDir)'!=''">$(OpenCVDir)\include</OpenCVIncludeDir>
+    <OpenCVLibDir Condition="'$(OpenCVLibDir)'=='' and '$(OpenCVDir)'!=''">$(OpenCVDir)\x64\vc17\lib</OpenCVLibDir>
+    <OpenCVBinDir Condition="'$(OpenCVBinDir)'=='' and '$(OpenCVDir)'!=''">$(OpenCVDir)\x64\vc17\bin</OpenCVBinDir>
+    <OpenCVLibNameDebug Condition="'$(OpenCVLibNameDebug)'=='' and Exists('C:\opencv\build\x64\vc16\lib\opencv_world4120d.lib')">opencv_world4120d.lib</OpenCVLibNameDebug>
+    <OpenCVLibNameRelease Condition="'$(OpenCVLibNameRelease)'=='' and Exists('C:\opencv\build\x64\vc16\lib\opencv_world4120.lib')">opencv_world4120.lib</OpenCVLibNameRelease>
+    <OpenCVLibNameDebug Condition="'$(OpenCVLibNameDebug)'==''">opencv_world4100d.lib</OpenCVLibNameDebug>
+    <OpenCVLibNameRelease Condition="'$(OpenCVLibNameRelease)'==''">opencv_world4100.lib</OpenCVLibNameRelease>
+  </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">
     <LinkIncremental>true</LinkIncremental>
   </PropertyGroup>
@@ -106,14 +121,23 @@
       <WarningLevel>Level3</WarningLevel>
       <Optimization>Disabled</Optimization>
       <PreprocessorDefinitions>WIN32;_DEBUG;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <PreprocessorDefinitions Condition="'$(EnableOpenCVCuda)'=='true' and '$(EnableOpenCVOpenCL)'=='true'">WIN32;_DEBUG;USE_OPENCV_CUDA;USE_OPENCV_OPENCL;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <PreprocessorDefinitions Condition="'$(EnableOpenCVCuda)'=='true' and '$(EnableOpenCVOpenCL)'!='true'">WIN32;_DEBUG;USE_OPENCV_CUDA;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <PreprocessorDefinitions Condition="'$(EnableOpenCVCuda)'!='true' and '$(EnableOpenCVOpenCL)'=='true'">WIN32;_DEBUG;USE_OPENCV_OPENCL;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <AdditionalIncludeDirectories Condition="'$(EnableOpenCVCuda)'=='true' or '$(EnableOpenCVOpenCL)'=='true'">$(OpenCVIncludeDir);%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <OpenMPSupport>true</OpenMPSupport>
     </ClCompile>
     <Link>
       <GenerateDebugInformation>true</GenerateDebugInformation>
       <AdditionalDependencies>
       </AdditionalDependencies>
+      <AdditionalDependencies Condition="'$(EnableOpenCVCuda)'=='true' or '$(EnableOpenCVOpenCL)'=='true'">$(OpenCVLibNameDebug);%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalLibraryDirectories Condition="'$(EnableOpenCVCuda)'=='true' or '$(EnableOpenCVOpenCL)'=='true'">$(OpenCVLibDir);%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
       <SubSystem>Windows</SubSystem>
     </Link>
+    <PostBuildEvent Condition="('$(EnableOpenCVCuda)'=='true' or '$(EnableOpenCVOpenCL)'=='true') and '$(OpenCVBinDir)'!=''">
+      <Command>if exist "$(OpenCVBinDir)" xcopy /Y /D "$(OpenCVBinDir)\opencv*.dll" "$(OutDir)"</Command>
+    </PostBuildEvent>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">
     <ClCompile>
@@ -130,13 +154,22 @@
     <ClCompile>
       <WarningLevel>Level3</WarningLevel>
       <PreprocessorDefinitions>WIN32;NDEBUG;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <PreprocessorDefinitions Condition="'$(EnableOpenCVCuda)'=='true' and '$(EnableOpenCVOpenCL)'=='true'">WIN32;NDEBUG;USE_OPENCV_CUDA;USE_OPENCV_OPENCL;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <PreprocessorDefinitions Condition="'$(EnableOpenCVCuda)'=='true' and '$(EnableOpenCVOpenCL)'!='true'">WIN32;NDEBUG;USE_OPENCV_CUDA;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <PreprocessorDefinitions Condition="'$(EnableOpenCVCuda)'!='true' and '$(EnableOpenCVOpenCL)'=='true'">WIN32;NDEBUG;USE_OPENCV_OPENCL;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <AdditionalIncludeDirectories Condition="'$(EnableOpenCVCuda)'=='true' or '$(EnableOpenCVOpenCL)'=='true'">$(OpenCVIncludeDir);%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
     </ClCompile>
     <Link>
       <GenerateDebugInformation>true</GenerateDebugInformation>
       <AdditionalDependencies>
       </AdditionalDependencies>
+      <AdditionalDependencies Condition="'$(EnableOpenCVCuda)'=='true' or '$(EnableOpenCVOpenCL)'=='true'">$(OpenCVLibNameRelease);%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalLibraryDirectories Condition="'$(EnableOpenCVCuda)'=='true' or '$(EnableOpenCVOpenCL)'=='true'">$(OpenCVLibDir);%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
       <SubSystem>Windows</SubSystem>
     </Link>
+    <PostBuildEvent Condition="('$(EnableOpenCVCuda)'=='true' or '$(EnableOpenCVOpenCL)'=='true') and '$(OpenCVBinDir)'!=''">
+      <Command>if exist "$(OpenCVBinDir)" xcopy /Y /D "$(OpenCVBinDir)\opencv*.dll" "$(OutDir)"</Command>
+    </PostBuildEvent>
   </ItemDefinitionGroup>
   <ItemGroup>
     <Reference Include="System" />

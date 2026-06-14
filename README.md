@@ -62,12 +62,67 @@ See `TESTING_GUIDE.md` for migration verification steps.
 ### Acceleration using OpenMP
 <img src="https://developers.redhat.com/blog/wp-content/uploads/2016/03/openmp_lg_transparent.gif" width="290" height="110" />
 
+### Optional GPU phase-correlation build (OpenCV CUDA)
 
-### It can generate panorama image even in small common areas.
+GPU phase correlation is now wired as an opt-in build path. Default builds remain CPU-only.
+
+Required:
+
+- OpenCV build that includes CUDA modules and matching runtime DLLs.
+- `OPENCV_DIR` set, or pass `OpenCVDir` explicitly.
+
+Enable in MSBuild:
+
+```powershell
+msbuild .\Image_Stitching.sln /t:Build /p:Configuration=Debug;Platform=x64;EnableOpenCVCuda=true;OpenCVDir="C:\opencv"
+```
+
+If your OpenCV world lib name/version differs, override it:
+
+```powershell
+msbuild .\Image_Stitching.sln /t:Build /p:Configuration=Debug;Platform=x64;EnableOpenCVCuda=true;OpenCVDir="C:\opencv";OpenCVLibNameDebug=opencv_world4xxxd.lib
+```
+
+Notes:
+
+- `EnableOpenCVCuda=true` injects `USE_OPENCV_CUDA` for x64 builds.
+- Include/lib/bin defaults are derived from `OpenCVDir` (`include`, `x64\vc17\lib`, `x64\vc17\bin`).
+- Post-build copies `opencv*.dll` into the output folder when GPU mode is enabled.
+
+### Optional GPU phase-correlation build (OpenCV OpenCL for AMD)
+
+For AMD GPUs (including Radeon RX 7600), use the OpenCL path.
+
+Required:
+
+- OpenCV build with OpenCL support (standard OpenCV builds usually include this).
+- AMD driver installed. Verified target environment example: AMD Software Adrenalin Edition 26.6.1.
+- `OPENCV_DIR` set, or pass `OpenCVDir` explicitly.
+
+Enable in MSBuild:
+
+```powershell
+msbuild .\Image_Stitching.sln /t:Build /p:Configuration=Debug;Platform=x64;EnableOpenCVOpenCL=true;OpenCVDir="C:\opencv"
+```
+
+Runtime behavior when the UI checkbox Use GPU phase backend is enabled:
+
+- CUDA available -> uses CUDA backend.
+- CUDA unavailable and OpenCL available -> uses OpenCL backend.
+- Neither available -> falls back to CPU backend.
+
+Visual Studio 2022 IDE defaults in this repository:
+
+- `EnableOpenCVOpenCL=true` by default.
+- Auto-detects OpenCV at `C:\opencv\build` when present.
+- Uses `C:\opencv\build\include`, `C:\opencv\build\x64\vc16\lib`, and `C:\opencv\build\x64\vc16\bin`.
+- Prefers OpenCV 4.12 world libs (`opencv_world4120d.lib`/`opencv_world4120.lib`) when found.
+
+### It can generate panorama image even in small common areas
 
 ![image 1](https://github.com/fbasatemur/Microscopy_Image_Stitching/blob/main/sample_images/little_area.jpg)
 
-### Scanning can be done in all directions. It can combine images that have moved asymmetrically in all directions.
+### Scanning can be done in all directions. It can combine images that have moved asymmetrically in all directions
 
 ![image 2](https://github.com/fbasatemur/Microscopy_Image_Stitching/blob/main/sample_images/big_steps.jpg)
 

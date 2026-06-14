@@ -22,6 +22,10 @@
   <data name="FormTitle" xml:space="preserve"><value>Goruntu Birlestirme</value></data>
   <data name="LabelImage" xml:space="preserve"><value>goruntu :</value></data>
   <data name="ButtonSave" xml:space="preserve"><value>Kaydet</value></data>
+  <data name="BlendModeLabel" xml:space="preserve"><value>Harman :</value></data>
+  <data name="BlendModeAuto" xml:space="preserve"><value>Otomatik</value></data>
+  <data name="BlendModeQuality" xml:space="preserve"><value>Kalite</value></data>
+  <data name="BlendModeSpeed" xml:space="preserve"><value>Hiz</value></data>
 
   <data name="OpenDialogFileName" xml:space="preserve"><value>dosyaAc</value></data>
   <data name="OpenDialogFilter" xml:space="preserve"><value>Goruntu dosyalari (*.bmp;*.jpg;*.jpeg)|*.bmp;*.jpg;*.jpeg|BMP dosyalari (*.bmp)|*.bmp|JPEG dosyalari (*.jpg;*.jpeg)|*.jpg;*.jpeg|Tum dosyalar (*.*)|*.*</value></data>

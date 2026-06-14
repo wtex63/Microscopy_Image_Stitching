@@ -6,13 +6,19 @@
 #include <atomic>
 #include <cstdint>
 
-#if defined(USE_OPENCV_CUDA)
+#if defined(USE_OPENCV_CUDA) || defined(USE_OPENCV_OPENCL)
 #include <opencv2/core.hpp>
+#include <opencv2/core/ocl.hpp>
+#include <opencv2/imgproc.hpp>
+#endif
+
+#if defined(USE_OPENCV_CUDA)
 #include <opencv2/core/cuda.hpp>
 #include <opencv2/cudaarithm.hpp>
 #endif
 
 static constexpr int kRotatedFallbackBudgetMs = 2200;
+static constexpr int kRotatedFallbackBudgetGpuMs = 1500;
 
 
 double* Conjugate(double* imaginary, int width, int height) {
@@ -40,6 +46,28 @@ static constexpr bool kPhaseCorrelationGpuCompiled = true;
 static constexpr bool kPhaseCorrelationGpuCompiled = false;
 #endif
 
+#if defined(USE_OPENCV_CUDA) || defined(USE_OPENCV_OPENCL)
+static constexpr bool kPhaseCorrelationOpenClCompiled = true;
+#else
+static constexpr bool kPhaseCorrelationOpenClCompiled = false;
+#endif
+
+static bool IsPhaseCorrelationOpenClAvailableImpl() {
+#if defined(USE_OPENCV_CUDA) || defined(USE_OPENCV_OPENCL)
+	try {
+		if (!cv::ocl::haveOpenCL())
+			return false;
+		cv::ocl::setUseOpenCL(true);
+		return cv::ocl::useOpenCL();
+	}
+	catch (...) {
+		return false;
+	}
+#else
+	return false;
+#endif
+}
+
 void SetHardOverlapCheck(bool enabled) {
 	g_hardOverlapCheckEnabled.store(enabled);
 }
@@ -62,20 +90,37 @@ PhaseCorrelationBackend GetPhaseCorrelationBackend() {
 bool IsPhaseCorrelationGpuAvailable() {
 	#if defined(USE_OPENCV_CUDA)
 	try {
-		return cv::cuda::getCudaEnabledDeviceCount() > 0;
+		if (cv::cuda::getCudaEnabledDeviceCount() > 0)
+			return true;
 	}
 	catch (...) {
-		return false;
+		// Continue to OpenCL probe below.
 	}
 	#endif
-	return kPhaseCorrelationGpuCompiled;
+
+	if (IsPhaseCorrelationOpenClAvailableImpl())
+		return true;
+
+	return kPhaseCorrelationGpuCompiled || kPhaseCorrelationOpenClCompiled;
 }
 
 const char* GetPhaseCorrelationBackendName() {
-	if (GetPhaseCorrelationBackend() == PhaseCorrelationBackendGpu && IsPhaseCorrelationGpuAvailable())
-		return "GPU";
-	if (GetPhaseCorrelationBackend() == PhaseCorrelationBackendGpu && !IsPhaseCorrelationGpuAvailable())
+	if (GetPhaseCorrelationBackend() == PhaseCorrelationBackendGpu) {
+		#if defined(USE_OPENCV_CUDA)
+		try {
+			if (cv::cuda::getCudaEnabledDeviceCount() > 0)
+				return "GPU (CUDA)";
+		}
+		catch (...) {
+			// Fall through to OpenCL probe.
+		}
+		#endif
+
+		if (IsPhaseCorrelationOpenClAvailableImpl())
+			return "GPU (OpenCL)";
+
 		return "GPU requested (fallback CPU)";
+	}
 	return "CPU";
 }
 
@@ -159,6 +204,72 @@ static bool TryPhaseCorrelationGpuCuda(double* fft1Real, double* fft1Imag, doubl
 }
 #endif
 
+#if defined(USE_OPENCV_CUDA) || defined(USE_OPENCV_OPENCL)
+static bool TryPhaseCorrelationOpenClUmat(double* fft1Real, double* fft1Imag, double* fft2Real, double* fft2Imag, int width, int height, double*& outReal)
+{
+	if (fft1Real == nullptr || fft1Imag == nullptr || fft2Real == nullptr || fft2Imag == nullptr || width <= 0 || height <= 0)
+		return false;
+	if (!IsPhaseCorrelationOpenClAvailableImpl())
+		return false;
+
+	try {
+		cv::Mat spec1(height, width, CV_32FC2);
+		cv::Mat spec2(height, width, CV_32FC2);
+
+		for (int y = 0; y < height; y++) {
+			cv::Vec2f* row1 = spec1.ptr<cv::Vec2f>(y);
+			cv::Vec2f* row2 = spec2.ptr<cv::Vec2f>(y);
+			for (int x = 0; x < width; x++) {
+				const long idx = (long)y * (long)width + (long)x;
+				row1[x][0] = (float)fft1Real[idx];
+				row1[x][1] = (float)fft1Imag[idx];
+				row2[x][0] = (float)fft2Real[idx];
+				row2[x][1] = (float)fft2Imag[idx];
+			}
+		}
+
+		cv::UMat uSpec1, uSpec2, uCross, uIfft;
+		spec1.copyTo(uSpec1);
+		spec2.copyTo(uSpec2);
+
+		cv::mulSpectrums(uSpec1, uSpec2, uCross, 0, true);
+
+		std::vector<cv::UMat> channels;
+		cv::split(uCross, channels);
+		if (channels.size() != 2)
+			return false;
+
+		cv::UMat uMag;
+		cv::magnitude(channels[0], channels[1], uMag);
+		cv::max(uMag, cv::Scalar(1e-12f), uMag);
+		cv::divide(channels[0], uMag, channels[0]);
+		cv::divide(channels[1], uMag, channels[1]);
+		cv::merge(channels, uCross);
+
+		cv::dft(uCross, uIfft, cv::DFT_INVERSE | cv::DFT_SCALE);
+
+		cv::Mat ifftHost;
+		uIfft.copyTo(ifftHost);
+
+		const long imageSize = (long)width * (long)height;
+		outReal = new double[imageSize];
+		for (int y = 0; y < height; y++) {
+			const cv::Vec2f* row = ifftHost.ptr<cv::Vec2f>(y);
+			for (int x = 0; x < width; x++) {
+				const long idx = (long)y * (long)width + (long)x;
+				outReal[idx] = (double)row[x][0];
+			}
+		}
+
+		return true;
+	}
+	catch (...) {
+		outReal = nullptr;
+		return false;
+	}
+}
+#endif
+
 double* PhaseCorrelation(double* fft1Real, double* fft1Imag, double* fft2Real, double* fft2Imag, int width, int height)
 {
 	// GPU backend can be enabled at runtime once compiled-in support is available.
@@ -172,6 +283,14 @@ double* PhaseCorrelation(double* fft1Real, double* fft1Imag, double* fft2Real, d
 		double* gpuOut = nullptr;
 		if (TryPhaseCorrelationGpuCuda(fft1Real, fft1Imag, fft2Real, fft2Imag, width, height, gpuOut) && gpuOut != nullptr)
 			return gpuOut;
+	}
+	#endif
+
+	#if defined(USE_OPENCV_CUDA) || defined(USE_OPENCV_OPENCL)
+	if (GetPhaseCorrelationBackend() == PhaseCorrelationBackendGpu) {
+		double* openClOut = nullptr;
+		if (TryPhaseCorrelationOpenClUmat(fft1Real, fft1Imag, fft2Real, fft2Imag, width, height, openClOut) && openClOut != nullptr)
+			return openClOut;
 	}
 	#endif
 
@@ -472,6 +591,39 @@ static void BuildGradientImage(BYTE* src, int width, int height, std::vector<BYT
 	}
 }
 
+static int GetRotatedFallbackBudgetMs()
+{
+	if (GetPhaseCorrelationBackend() == PhaseCorrelationBackendGpu)
+		return kRotatedFallbackBudgetGpuMs;
+	return kRotatedFallbackBudgetMs;
+}
+
+static std::vector<BYTE>& GetGradientImageCached(BYTE* src, int width, int height)
+{
+	struct GradientCacheEntry {
+		BYTE* src = nullptr;
+		int width = 0;
+		int height = 0;
+		std::vector<BYTE> grad;
+	};
+
+	static GradientCacheEntry cache[2];
+	static int nextEvict = 0;
+
+	for (int i = 0; i < 2; i++) {
+		if (cache[i].src == src && cache[i].width == width && cache[i].height == height)
+			return cache[i].grad;
+	}
+
+	int slot = nextEvict;
+	nextEvict = (nextEvict + 1) & 1;
+	cache[slot].src = src;
+	cache[slot].width = width;
+	cache[slot].height = height;
+	BuildGradientImage(src, width, height, cache[slot].grad);
+	return cache[slot].grad;
+}
+
 static void FallbackGlobalNccSearch(BYTE* img1, BYTE* img2, int width, int height, int& dx, int& dy, float& angleDeg, float baseScore)
 {
 	if (img1 == nullptr || img2 == nullptr || width <= 1 || height <= 1)
@@ -496,6 +648,61 @@ static void FallbackGlobalNccSearch(BYTE* img1, BYTE* img2, int width, int heigh
 		for (int x = 0; x < w2; x++) {
 			const int ox = x * ds;
 			a2[(size_t)y * (size_t)w2 + (size_t)x] = img1[oy * width + ox];
+
+	bool useOpenClCoarse = false;
+#if defined(USE_OPENCV_OPENCL) || defined(USE_OPENCV_CUDA)
+	cv::UMat uA2;
+	cv::UMat uB2;
+	if (GetPhaseCorrelationBackend() == PhaseCorrelationBackendGpu && IsPhaseCorrelationOpenClAvailableImpl()) {
+		try {
+			cv::Mat mA2(h2, w2, CV_8UC1, a2.data());
+			cv::Mat mB2(h2, w2, CV_8UC1, b2.data());
+			mA2.copyTo(uA2);
+			mB2.copyTo(uB2);
+			useOpenClCoarse = true;
+		}
+		catch (...) {
+			useOpenClCoarse = false;
+		}
+	}
+#endif
+
+	auto EvaluateCoarseScore = [&](int sdx, int sdy) -> float {
+		if (sdx <= -w2 + 1 || sdx >= w2 || sdy <= -h2 + 1 || sdy >= h2)
+			return -2.0f;
+		if (!useOpenClCoarse)
+			return EvaluateShiftNccSampled(a2.data(), b2.data(), w2, h2, sdx, sdy, 2);
+#if defined(USE_OPENCV_OPENCL) || defined(USE_OPENCV_CUDA)
+		try {
+			const int xStart = (sdx > 0) ? sdx : 0;
+			const int yStart = (sdy > 0) ? sdy : 0;
+			const int xEnd = (w2 + sdx - 1 < w2 - 1) ? (w2 + sdx - 1) : (w2 - 1);
+			const int yEnd = (h2 + sdy - 1 < h2 - 1) ? (h2 + sdy - 1) : (h2 - 1);
+			if (xStart >= xEnd || yStart >= yEnd)
+				return -2.0f;
+			const int overlapW = xEnd - xStart + 1;
+			const int overlapH = yEnd - yStart + 1;
+			if (overlapW < w2 / 12 || overlapH < h2 / 12)
+				return -2.0f;
+			cv::Rect roi1(xStart, yStart, overlapW, overlapH);
+			cv::Rect roi2(xStart - sdx, yStart - sdy, overlapW, overlapH);
+			cv::UMat t1 = uA2(roi1);
+			cv::UMat t2 = uB2(roi2);
+			cv::UMat result;
+			cv::matchTemplate(t1, t2, result, cv::TM_CCOEFF_NORMED);
+			cv::Mat host;
+			result.copyTo(host);
+			if (host.empty())
+				return -2.0f;
+			return host.at<float>(0, 0);
+		}
+		catch (...) {
+			return EvaluateShiftNccSampled(a2.data(), b2.data(), w2, h2, sdx, sdy, 2);
+		}
+#else
+		return EvaluateShiftNccSampled(a2.data(), b2.data(), w2, h2, sdx, sdy, 2);
+#endif
+	};
 			b2[(size_t)y * (size_t)w2 + (size_t)x] = img2[oy * width + ox];
 		}
 	}
@@ -677,6 +884,63 @@ static void FallbackLocalNccSearch(BYTE* img1, BYTE* img2, int width, int height
 	int bestDx = dx;
 	int bestDy = dy;
 
+	bool useOpenClCoarse = false;
+#if defined(USE_OPENCV_OPENCL) || defined(USE_OPENCV_CUDA)
+	cv::UMat uImg1;
+	cv::UMat uImg2;
+	if (GetPhaseCorrelationBackend() == PhaseCorrelationBackendGpu && IsPhaseCorrelationOpenClAvailableImpl()) {
+		try {
+			cv::Mat m1(height, width, CV_8UC1, img1);
+			cv::Mat m2(height, width, CV_8UC1, img2);
+			m1.copyTo(uImg1);
+			m2.copyTo(uImg2);
+			useOpenClCoarse = true;
+		}
+		catch (...) {
+			useOpenClCoarse = false;
+		}
+	}
+#endif
+
+	auto EvaluateLocalCoarse = [&](int sdx, int sdy) -> float {
+		if (!useOpenClCoarse)
+			return EvaluateShiftNccSampled(img1, img2, width, height, sdx, sdy, 4);
+#if defined(USE_OPENCV_OPENCL) || defined(USE_OPENCV_CUDA)
+		try {
+			const int xStart = (sdx > 0) ? sdx : 0;
+			const int yStart = (sdy > 0) ? sdy : 0;
+			const int xEnd = (width + sdx - 1 < width - 1) ? (width + sdx - 1) : (width - 1);
+			const int yEnd = (height + sdy - 1 < height - 1) ? (height + sdy - 1) : (height - 1);
+			if (xStart >= xEnd || yStart >= yEnd)
+				return -2.0f;
+			const int overlapW = xEnd - xStart + 1;
+			const int overlapH = yEnd - yStart + 1;
+			if (overlapW < width / 12 || overlapH < height / 12)
+				return -2.0f;
+			cv::Rect roi1(xStart, yStart, overlapW, overlapH);
+			cv::Rect roi2(xStart - sdx, yStart - sdy, overlapW, overlapH);
+			cv::UMat t1 = uImg1(roi1);
+			cv::UMat t2 = uImg2(roi2);
+			cv::UMat s1, s2, result;
+			cv::resize(t1, s1, cv::Size(), 0.25, 0.25, cv::INTER_AREA);
+			cv::resize(t2, s2, cv::Size(), 0.25, 0.25, cv::INTER_AREA);
+			if (s1.cols < 8 || s1.rows < 8 || s2.cols < 8 || s2.rows < 8)
+				return EvaluateShiftNccSampled(img1, img2, width, height, sdx, sdy, 4);
+			cv::matchTemplate(s1, s2, result, cv::TM_CCOEFF_NORMED);
+			cv::Mat host;
+			result.copyTo(host);
+			if (host.empty())
+				return -2.0f;
+			return host.at<float>(0, 0);
+		}
+		catch (...) {
+			return EvaluateShiftNccSampled(img1, img2, width, height, sdx, sdy, 4);
+		}
+#else
+		return EvaluateShiftNccSampled(img1, img2, width, height, sdx, sdy, 4);
+#endif
+	};
+
 #pragma omp parallel
 	{
 		float tBest = best;
@@ -687,7 +951,7 @@ static void FallbackLocalNccSearch(BYTE* img1, BYTE* img2, int width, int height
 		#pragma omp for schedule(static) nowait
 		for (int cy = minDy; cy <= maxDy; cy += coarseStep) {
 			for (int cx = minDx; cx <= maxDx; cx += coarseStep) {
-				float s = EvaluateShiftNccSampled(img1, img2, width, height, cx, cy, 4);
+				float s = EvaluateLocalCoarse(cx, cy);
 				float objective = s + ShiftSelectionBias(width, height, cx, cy);
 				if (IsBetterCandidate(objective, s, cx, cy, tBestObjective, tBest, tBestDx, tBestDy)) {
 					tBest = s;
@@ -769,10 +1033,8 @@ static void FallbackVerticalAnchoredSearch(BYTE* img1, BYTE* img2, int width, in
 	if (img1 == nullptr || img2 == nullptr || width <= 1 || height <= 1)
 		return;
 
-	std::vector<BYTE> grad1;
-	std::vector<BYTE> grad2;
-	BuildGradientImage(img1, width, height, grad1);
-	BuildGradientImage(img2, width, height, grad2);
+	std::vector<BYTE>& grad1 = GetGradientImageCached(img1, width, height);
+	std::vector<BYTE>& grad2 = GetGradientImageCached(img2, width, height);
 
 	auto EvaluateCompositeScore = [&](int sdx, int sdy, float sang) -> float {
 		float sIntensity = (sang == 0.0f)
@@ -823,7 +1085,7 @@ static void FallbackVerticalAnchoredSearch(BYTE* img1, BYTE* img2, int width, in
 			}
 		}
 	}
-	auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(kRotatedFallbackBudgetMs);
+	auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(GetRotatedFallbackBudgetMs());
 	std::atomic<bool> stopSearch(false);
 
 	int bestDx = dx;
@@ -930,10 +1192,8 @@ static void FallbackHorizontalAnchoredSearch(BYTE* img1, BYTE* img2, int width, 
 	if (img1 == nullptr || img2 == nullptr || width <= 1 || height <= 1)
 		return;
 
-	std::vector<BYTE> grad1;
-	std::vector<BYTE> grad2;
-	BuildGradientImage(img1, width, height, grad1);
-	BuildGradientImage(img2, width, height, grad2);
+	std::vector<BYTE>& grad1 = GetGradientImageCached(img1, width, height);
+	std::vector<BYTE>& grad2 = GetGradientImageCached(img2, width, height);
 
 	auto EvaluateCompositeScore = [&](int sdx, int sdy, float sang) -> float {
 		float sIntensity = (sang == 0.0f)
@@ -984,7 +1244,7 @@ static void FallbackHorizontalAnchoredSearch(BYTE* img1, BYTE* img2, int width, 
 			}
 		}
 	}
-	auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(kRotatedFallbackBudgetMs);
+	auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(GetRotatedFallbackBudgetMs());
 	std::atomic<bool> stopSearch(false);
 
 	int bestDx = dx;
@@ -1090,10 +1350,8 @@ static void FallbackEdgeAnchoredSearch(BYTE* img1, BYTE* img2, int width, int he
 	if (img1 == nullptr || img2 == nullptr || width <= 1 || height <= 1)
 		return;
 
-	std::vector<BYTE> grad1;
-	std::vector<BYTE> grad2;
-	BuildGradientImage(img1, width, height, grad1);
-	BuildGradientImage(img2, width, height, grad2);
+	std::vector<BYTE>& grad1 = GetGradientImageCached(img1, width, height);
+	std::vector<BYTE>& grad2 = GetGradientImageCached(img2, width, height);
 
 	auto EvaluateCompositeScore = [&](int sdx, int sdy, float sang) -> float {
 		float sIntensity = (sang == 0.0f)
@@ -1176,7 +1434,7 @@ static void FallbackEdgeAnchoredSearch(BYTE* img1, BYTE* img2, int width, int he
 			}
 		}
 	}
-	auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(kRotatedFallbackBudgetMs);
+	auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(GetRotatedFallbackBudgetMs());
 	std::atomic<bool> stopSearch(false);
 
 	auto IsBetterCandidate = [](float objA, float scoreA, int dxA, int dyA, float angA,
@@ -1312,10 +1570,8 @@ static void RefineShiftRotationLocal(BYTE* img1, BYTE* img2, int width, int heig
 	if (img1 == nullptr || img2 == nullptr || width <= 1 || height <= 1)
 		return;
 
-	std::vector<BYTE> grad1;
-	std::vector<BYTE> grad2;
-	BuildGradientImage(img1, width, height, grad1);
-	BuildGradientImage(img2, width, height, grad2);
+	std::vector<BYTE>& grad1 = GetGradientImageCached(img1, width, height);
+	std::vector<BYTE>& grad2 = GetGradientImageCached(img2, width, height);
 
 	auto EvaluateCompositeScore = [&](int sdx, int sdy, float sang) -> float {
 		float sIntensity = (sang == 0.0f)
@@ -1365,7 +1621,8 @@ static void RefineShiftRotationLocal(BYTE* img1, BYTE* img2, int width, int heig
 	const int dyRange[2] = { 6, 3 };
 	const float angRange[2] = { 1.0f, 0.45f };
 	const float angStep[2] = { 0.25f, 0.10f };
-	auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(700);
+	int refineBudgetMs = (GetPhaseCorrelationBackend() == PhaseCorrelationBackendGpu) ? 450 : 700;
+	auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(refineBudgetMs);
 
 	for (int pass = 0; pass < 2; pass++) {
 		int centerDx = bestDx;
@@ -1409,10 +1666,8 @@ static void RefineAxisDominantTranslation(BYTE* img1, BYTE* img2, int width, int
 	if (img1 == nullptr || img2 == nullptr || width <= 1 || height <= 1)
 		return;
 
-	std::vector<BYTE> grad1;
-	std::vector<BYTE> grad2;
-	BuildGradientImage(img1, width, height, grad1);
-	BuildGradientImage(img2, width, height, grad2);
+	std::vector<BYTE>& grad1 = GetGradientImageCached(img1, width, height);
+	std::vector<BYTE>& grad2 = GetGradientImageCached(img2, width, height);
 
 	auto EvaluateComposite = [&](int sdx, int sdy) -> float {
 		float si = EvaluateShiftNccSampled(img1, img2, width, height, sdx, sdy, 2);
@@ -1435,7 +1690,8 @@ static void RefineAxisDominantTranslation(BYTE* img1, BYTE* img2, int width, int
 	const bool verticalDominant = abs(dy) >= abs(dx);
 	const int primaryRange = verticalDominant ? 14 : 10;
 	const int crossRange = verticalDominant ? 3 : 2;
-	auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(260);
+	int axisBudgetMs = (GetPhaseCorrelationBackend() == PhaseCorrelationBackendGpu) ? 180 : 260;
+	auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(axisBudgetMs);
 
 	for (int p = -primaryRange; p <= primaryRange; p++) {
 		if (std::chrono::steady_clock::now() >= deadline)
@@ -1555,10 +1811,8 @@ static void RefineCrossAxisForVerticalSeam(BYTE* img1, BYTE* img2, int width, in
 	if (abs(dy) < abs(dx) * 2)
 		return;
 
-	std::vector<BYTE> grad1;
-	std::vector<BYTE> grad2;
-	BuildGradientImage(img1, width, height, grad1);
-	BuildGradientImage(img2, width, height, grad2);
+	std::vector<BYTE>& grad1 = GetGradientImageCached(img1, width, height);
+	std::vector<BYTE>& grad2 = GetGradientImageCached(img2, width, height);
 
 	auto Score = [&](int sdx) -> float {
 		float si = EvaluateShiftNccSampled(img1, img2, width, height, sdx, dy, 2);
@@ -1584,7 +1838,8 @@ static void RefineCrossAxisForVerticalSeam(BYTE* img1, BYTE* img2, int width, in
 	int bestDx = dx;
 	float best = Score(dx);
 	float bestObjective = best;
-	auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(220);
+	int crossAxisBudgetMs = (GetPhaseCorrelationBackend() == PhaseCorrelationBackendGpu) ? 150 : 220;
+	auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(crossAxisBudgetMs);
 
 	for (int off = -18; off <= 18; off++) {
 		if (std::chrono::steady_clock::now() >= deadline)
@@ -1615,10 +1870,8 @@ static void EnforceVerticalSeamDxEnsemble(BYTE* img1, BYTE* img2, int width, int
 	if (abs(dy) < height / 3)
 		return;
 
-	std::vector<BYTE> grad1;
-	std::vector<BYTE> grad2;
-	BuildGradientImage(img1, width, height, grad1);
-	BuildGradientImage(img2, width, height, grad2);
+	std::vector<BYTE>& grad1 = GetGradientImageCached(img1, width, height);
+	std::vector<BYTE>& grad2 = GetGradientImageCached(img2, width, height);
 
 	auto Score = [&](int sdx) -> float {
 		float seam = EvaluateVerticalSeamEdgeScore(img1, img2, width, height, sdx, dy, 3);
@@ -1655,7 +1908,8 @@ static void EnforceVerticalSeamDxEnsemble(BYTE* img1, BYTE* img2, int width, int
 	int bestDx = originDx;
 	float bestScore = originScore;
 
-	auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(220);
+	int ensembleBudgetMs = (GetPhaseCorrelationBackend() == PhaseCorrelationBackendGpu) ? 150 : 220;
+	auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(ensembleBudgetMs);
 	for (int candDx = -24; candDx <= 24; candDx += 2) {
 		if (std::chrono::steady_clock::now() >= deadline)
 			break;
@@ -1682,10 +1936,8 @@ static void ResolveVerticalDxSignLowConfidence(BYTE* img1, BYTE* img2, int width
 	if (adx < 4)
 		return;
 
-	std::vector<BYTE> grad1;
-	std::vector<BYTE> grad2;
-	BuildGradientImage(img1, width, height, grad1);
-	BuildGradientImage(img2, width, height, grad2);
+	std::vector<BYTE>& grad1 = GetGradientImageCached(img1, width, height);
+	std::vector<BYTE>& grad2 = GetGradientImageCached(img2, width, height);
 
 	auto Score = [&](int sdx) -> float {
 		float seam = EvaluateVerticalSeamEdgeScore(img1, img2, width, height, sdx, dy, 3);
@@ -2061,4 +2313,5 @@ int ZoneDetection(BYTE* img1, BYTE* img2, int width, int height, xy* vec, xy* po
 
 	return corner;
 }
+
 
