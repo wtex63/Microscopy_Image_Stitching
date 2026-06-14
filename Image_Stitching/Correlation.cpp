@@ -1404,6 +1404,325 @@ static void RefineShiftRotationLocal(BYTE* img1, BYTE* img2, int width, int heig
 	angleDeg = bestAng;
 }
 
+static void RefineAxisDominantTranslation(BYTE* img1, BYTE* img2, int width, int height, int& dx, int& dy, float& angleDeg)
+{
+	if (img1 == nullptr || img2 == nullptr || width <= 1 || height <= 1)
+		return;
+
+	std::vector<BYTE> grad1;
+	std::vector<BYTE> grad2;
+	BuildGradientImage(img1, width, height, grad1);
+	BuildGradientImage(img2, width, height, grad2);
+
+	auto EvaluateComposite = [&](int sdx, int sdy) -> float {
+		float si = EvaluateShiftNccSampled(img1, img2, width, height, sdx, sdy, 2);
+		float sg = EvaluateShiftNccSampled(grad1.data(), grad2.data(), width, height, sdx, sdy, 3);
+		bool vi = si > -1.5f;
+		bool vg = sg > -1.5f;
+		if (vi && vg) return 0.35f * si + 0.65f * sg;
+		if (vg) return sg;
+		if (vi) return si;
+		return -2.0f;
+	};
+
+	int bestDx = dx;
+	int bestDy = dy;
+	const int originDx = dx;
+	const int originDy = dy;
+	float best = EvaluateComposite(dx, dy);
+	float bestObjective = best;
+
+	const bool verticalDominant = abs(dy) >= abs(dx);
+	const int primaryRange = verticalDominant ? 14 : 10;
+	const int crossRange = verticalDominant ? 3 : 2;
+	auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(260);
+
+	for (int p = -primaryRange; p <= primaryRange; p++) {
+		if (std::chrono::steady_clock::now() >= deadline)
+			break;
+		for (int c = -crossRange; c <= crossRange; c++) {
+			int candDx = verticalDominant ? (dx + c) : (dx + p);
+			int candDy = verticalDominant ? (dy + p) : (dy + c);
+			if (candDx < -width + 1 || candDx > width - 1 || candDy < -height + 1 || candDy > height - 1)
+				continue;
+			float s = EvaluateComposite(candDx, candDy);
+			const int move = abs(candDx - originDx) + abs(candDy - originDy);
+			const float movePenalty = 0.010f * (float)move;
+			float objective = s - movePenalty;
+			if (objective > bestObjective || (objective == bestObjective && move < (abs(bestDx - originDx) + abs(bestDy - originDy)))) {
+				best = s;
+				bestObjective = objective;
+				bestDx = candDx;
+				bestDy = candDy;
+			}
+		}
+	}
+
+	if (best > -1.2f && bestObjective > (EvaluateComposite(originDx, originDy) + 0.003f)) {
+		dx = bestDx;
+		dy = bestDy;
+		// For translation fallback, suppress tiny rotational noise that causes edge ghosting.
+		if (fabs(angleDeg) <= 2.2f)
+			angleDeg = 0.0f;
+	}
+}
+
+static float EvaluateVerticalSeamEdgeScore(BYTE* img1, BYTE* img2, int width, int height, int dx, int dy, int sampleStep)
+{
+	if (img1 == nullptr || img2 == nullptr || width <= 2 || height <= 2)
+		return -2.0f;
+
+	if (sampleStep < 1)
+		sampleStep = 1;
+
+	const int xStart = (dx > 0) ? dx : 0;
+	const int yStart = (dy > 0) ? dy : 0;
+	const int xEnd = (width + dx - 1 < width - 1) ? (width + dx - 1) : (width - 1);
+	const int yEnd = (height + dy - 1 < height - 1) ? (height + dy - 1) : (height - 1);
+
+	if (xStart + 1 >= xEnd || yStart + 1 >= yEnd)
+		return -2.0f;
+
+	const int overlapW = xEnd - xStart + 1;
+	const int overlapH = yEnd - yStart + 1;
+	if (overlapW < width / 14 || overlapH < height / 16)
+		return -2.0f;
+
+	// Restrict scoring to a seam-centered vertical band and prioritize vertical-edge alignment.
+	int seamBandY0 = yStart + overlapH / 4;
+	int seamBandY1 = yEnd - overlapH / 4;
+	if (seamBandY1 - seamBandY0 < 24) {
+		seamBandY0 = yStart;
+		seamBandY1 = yEnd;
+	}
+
+	double wAbsDiff = 0.0;
+	double wTotal = 0.0;
+	double s1 = 0.0, s2 = 0.0, s11 = 0.0, s22 = 0.0, s12 = 0.0;
+	int n = 0;
+
+	for (int y = seamBandY0; y <= seamBandY1; y += sampleStep) {
+		const int y2 = y - dy;
+		const int row1 = y * width;
+		const int row2 = y2 * width;
+		for (int x = xStart + 1; x <= xEnd - 1; x += sampleStep) {
+			const int x2 = x - dx;
+			if (x2 <= 0 || x2 >= width - 1)
+				continue;
+
+			const double a = (double)img1[row1 + x];
+			const double b = (double)img2[row2 + x2];
+
+			const int gx1 = abs((int)img1[row1 + (x + 1)] - (int)img1[row1 + (x - 1)]);
+			const int gx2 = abs((int)img2[row2 + (x2 + 1)] - (int)img2[row2 + (x2 - 1)]);
+			double w = (double)((gx1 > gx2) ? gx1 : gx2);
+			if (w < 8.0)
+				continue;
+
+			wAbsDiff += w * fabs(a - b);
+			wTotal += w;
+
+			s1 += a;
+			s2 += b;
+			s11 += a * a;
+			s22 += b * b;
+			s12 += a * b;
+			n++;
+		}
+	}
+
+	if (n < 128 || wTotal <= 1e-9)
+		return -2.0f;
+
+	const double nf = (double)n;
+	const double num = s12 - (s1 * s2) / nf;
+	const double den1 = s11 - (s1 * s1) / nf;
+	const double den2 = s22 - (s2 * s2) / nf;
+	const double den = sqrt(den1 * den2);
+	if (den <= 1e-12)
+		return -2.0f;
+
+	const double ncc = num / den;
+	const double edgeAgreement = 1.0 - (wAbsDiff / (wTotal * 255.0));
+	const double clampedEdgeAgreement = (edgeAgreement < -1.0) ? -1.0 : ((edgeAgreement > 1.0) ? 1.0 : edgeAgreement);
+	return (float)(0.40 * ncc + 0.60 * clampedEdgeAgreement);
+}
+
+static void RefineCrossAxisForVerticalSeam(BYTE* img1, BYTE* img2, int width, int height, int& dx, int& dy)
+{
+	if (img1 == nullptr || img2 == nullptr || width <= 1 || height <= 1)
+		return;
+	if (abs(dy) < abs(dx) * 2)
+		return;
+
+	std::vector<BYTE> grad1;
+	std::vector<BYTE> grad2;
+	BuildGradientImage(img1, width, height, grad1);
+	BuildGradientImage(img2, width, height, grad2);
+
+	auto Score = [&](int sdx) -> float {
+		float si = EvaluateShiftNccSampled(img1, img2, width, height, sdx, dy, 2);
+		float sg = EvaluateShiftNccSampled(grad1.data(), grad2.data(), width, height, sdx, dy, 3);
+		float seamEdge = EvaluateVerticalSeamEdgeScore(img1, img2, width, height, sdx, dy, 3);
+
+		if (si > -1.5f && sg > -1.5f && seamEdge > -1.5f)
+			return 0.20f * si + 0.30f * sg + 0.50f * seamEdge;
+		if (sg > -1.5f && seamEdge > -1.5f)
+			return 0.45f * sg + 0.55f * seamEdge;
+		if (si > -1.5f && seamEdge > -1.5f)
+			return 0.45f * si + 0.55f * seamEdge;
+		if (seamEdge > -1.5f)
+			return seamEdge;
+		if (sg > -1.5f)
+			return sg;
+		if (si > -1.5f)
+			return si;
+		return -2.0f;
+	};
+
+	const int originDx = dx;
+	int bestDx = dx;
+	float best = Score(dx);
+	float bestObjective = best;
+	auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(220);
+
+	for (int off = -18; off <= 18; off++) {
+		if (std::chrono::steady_clock::now() >= deadline)
+			break;
+		int candDx = originDx + off;
+		if (candDx < -width + 1 || candDx > width - 1)
+			continue;
+		float s = Score(candDx);
+		// Keep cross-axis correction conservative; large dx jumps are often score noise on repetitive PCB texture.
+		const float movePenalty = 0.0125f * (float)abs(candDx - originDx);
+		float objective = s - movePenalty;
+		if (objective > bestObjective || (objective == bestObjective && abs(candDx - originDx) < abs(bestDx - originDx))) {
+			best = s;
+			bestObjective = objective;
+			bestDx = candDx;
+		}
+	}
+
+	// Only apply if the seam objective improves meaningfully versus staying at the original dx.
+	if (best > -1.2f && bestObjective > (Score(originDx) + 0.004f))
+		dx = bestDx;
+}
+
+static void EnforceVerticalSeamDxEnsemble(BYTE* img1, BYTE* img2, int width, int height, int& dx, int dy)
+{
+	if (img1 == nullptr || img2 == nullptr || width <= 2 || height <= 2)
+		return;
+	if (abs(dy) < height / 3)
+		return;
+
+	std::vector<BYTE> grad1;
+	std::vector<BYTE> grad2;
+	BuildGradientImage(img1, width, height, grad1);
+	BuildGradientImage(img2, width, height, grad2);
+
+	auto Score = [&](int sdx) -> float {
+		float seam = EvaluateVerticalSeamEdgeScore(img1, img2, width, height, sdx, dy, 3);
+		float si = EvaluateShiftNccSampled(img1, img2, width, height, sdx, dy, 2);
+		float sg = EvaluateShiftNccSampled(grad1.data(), grad2.data(), width, height, sdx, dy, 3);
+
+		float base = -2.0f;
+		if (seam > -1.5f && si > -1.5f && sg > -1.5f)
+			base = 0.50f * seam + 0.25f * si + 0.25f * sg;
+		else if (seam > -1.5f && sg > -1.5f)
+			base = 0.65f * seam + 0.35f * sg;
+		else if (seam > -1.5f && si > -1.5f)
+			base = 0.65f * seam + 0.35f * si;
+		else if (seam > -1.5f)
+			base = seam;
+		else if (sg > -1.5f)
+			base = sg;
+		else if (si > -1.5f)
+			base = si;
+
+		if (base <= -1.5f)
+			return -2.0f;
+
+		// In low-confidence vertical stitching, avoid being trapped at dx ~= 0 on repetitive textures.
+		float nonZeroBias = 0.0f;
+		int adx = abs(sdx);
+		if (adx >= 6 && adx <= 20)
+			nonZeroBias = 0.006f;
+		return base + nonZeroBias;
+	};
+
+	const int originDx = dx;
+	float originScore = Score(originDx);
+	int bestDx = originDx;
+	float bestScore = originScore;
+
+	auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(220);
+	for (int candDx = -24; candDx <= 24; candDx += 2) {
+		if (std::chrono::steady_clock::now() >= deadline)
+			break;
+		if (candDx < -width + 1 || candDx > width - 1)
+			continue;
+		float s = Score(candDx);
+		if (s > bestScore || (s == bestScore && abs(candDx) > abs(bestDx))) {
+			bestScore = s;
+			bestDx = candDx;
+		}
+	}
+
+	if (bestScore > originScore + 0.002f || (abs(originDx) <= 3 && abs(bestDx) >= 6 && bestScore > originScore - 0.003f))
+		dx = bestDx;
+}
+
+static void ResolveVerticalDxSignLowConfidence(BYTE* img1, BYTE* img2, int width, int height, int& dx, int dy)
+{
+	if (img1 == nullptr || img2 == nullptr || width <= 2 || height <= 2)
+		return;
+	if (abs(dy) < height / 3)
+		return;
+	int adx = abs(dx);
+	if (adx < 4)
+		return;
+
+	std::vector<BYTE> grad1;
+	std::vector<BYTE> grad2;
+	BuildGradientImage(img1, width, height, grad1);
+	BuildGradientImage(img2, width, height, grad2);
+
+	auto Score = [&](int sdx) -> float {
+		float seam = EvaluateVerticalSeamEdgeScore(img1, img2, width, height, sdx, dy, 3);
+		float si = EvaluateShiftNccSampled(img1, img2, width, height, sdx, dy, 2);
+		float sg = EvaluateShiftNccSampled(grad1.data(), grad2.data(), width, height, sdx, dy, 3);
+		if (seam > -1.5f && si > -1.5f && sg > -1.5f)
+			return 0.55f * seam + 0.25f * si + 0.20f * sg;
+		if (seam > -1.5f && sg > -1.5f)
+			return 0.70f * seam + 0.30f * sg;
+		if (seam > -1.5f && si > -1.5f)
+			return 0.70f * seam + 0.30f * si;
+		if (seam > -1.5f)
+			return seam;
+		if (sg > -1.5f)
+			return sg;
+		if (si > -1.5f)
+			return si;
+		return -2.0f;
+	};
+
+	float sPos = Score(adx);
+	float sNeg = Score(-adx);
+	if (sPos <= -1.5f && sNeg <= -1.5f)
+		return;
+	if (sPos > sNeg + 0.004f) {
+		dx = adx;
+		return;
+	}
+	if (sNeg > sPos + 0.004f) {
+		dx = -adx;
+		return;
+	}
+
+	// Ambiguous sign: prefer positive dx for stable corner selection in vertical low-confidence runs.
+	dx = adx;
+}
+
 //float Correlation(BYTE* img1, BYTE* img2, int width, int height, int zoneWidth, int zoneHeight, int start1H, int start1W, int start2H, int start2W, BYTE v) {
 //
 //	int newR1, newC1, newR2, newC2;
@@ -1475,6 +1794,10 @@ int ZoneDetection(BYTE* img1, BYTE* img2, int width, int height, xy* vec, xy* po
 	int dx = pocDot->x;
 	int dy = pocDot->y;
 	float rot = 0.0f;
+	int anchorDx = dx;
+	int anchorDy = dy;
+	float anchorRot = rot;
+	bool hasTranslationAnchor = false;
 
 	if (dx > width / 2)
 		dx -= width;
@@ -1553,6 +1876,10 @@ int ZoneDetection(BYTE* img1, BYTE* img2, int width, int height, xy* vec, xy* po
 			dx = vertDx;
 			dy = vertDy;
 			rot = vertRot;
+			anchorDx = dx;
+			anchorDy = dy;
+			anchorRot = rot;
+			hasTranslationAnchor = true;
 			currentScore = (rot == 0.0f)
 				? EvaluateShiftNccSampled(img1, img2, width, height, dx, dy, 2)
 				: EvaluateShiftNccSampledRotated(img1, img2, width, height, dx, dy, rot, 2);
@@ -1567,6 +1894,10 @@ int ZoneDetection(BYTE* img1, BYTE* img2, int width, int height, xy* vec, xy* po
 			dx = horizDx;
 			dy = horizDy;
 			rot = horizRot;
+			anchorDx = dx;
+			anchorDy = dy;
+			anchorRot = rot;
+			hasTranslationAnchor = true;
 			currentScore = (rot == 0.0f)
 				? EvaluateShiftNccSampled(img1, img2, width, height, dx, dy, 2)
 				: EvaluateShiftNccSampledRotated(img1, img2, width, height, dx, dy, rot, 2);
@@ -1633,6 +1964,50 @@ int ZoneDetection(BYTE* img1, BYTE* img2, int width, int height, xy* vec, xy* po
 			else *fallbackEdgeMs += refineMs;
 		}
 	}
+
+	if (currentScore < 0.78f || (abs(dx) < width / 18 || abs(dy) < height / 18)) {
+		auto ttrans0 = std::chrono::high_resolution_clock::now();
+		RefineAxisDominantTranslation(img1, img2, width, height, dx, dy, rot);
+		RefineCrossAxisForVerticalSeam(img1, img2, width, height, dx, dy);
+		auto ttrans1 = std::chrono::high_resolution_clock::now();
+		currentScore = EvaluateShiftNccSampled(img1, img2, width, height, dx, dy, 2);
+		if (fallbackEdgeMs != nullptr) {
+			double trMs = std::chrono::duration_cast<std::chrono::duration<double, std::milli>>(ttrans1 - ttrans0).count();
+			if (*fallbackEdgeMs < 0.0) *fallbackEdgeMs = trMs;
+			else *fallbackEdgeMs += trMs;
+		}
+	}
+
+	// If later refinements collapse cross-axis motion in a vertical stitch, keep the stronger fallback anchor.
+	if (hasTranslationAnchor) {
+		const bool verticalDominantAnchor = abs(anchorDy) >= abs(anchorDx) * 2;
+		if (verticalDominantAnchor && abs(anchorDy) > height / 5) {
+			float anchorEdge = EvaluateVerticalSeamEdgeScore(img1, img2, width, height, anchorDx, anchorDy, 3);
+			float currentEdge = EvaluateVerticalSeamEdgeScore(img1, img2, width, height, dx, dy, 3);
+			float anchorNcc = EvaluateShiftNccSampled(img1, img2, width, height, anchorDx, anchorDy, 2);
+			float currentNcc = EvaluateShiftNccSampled(img1, img2, width, height, dx, dy, 2);
+
+			float anchorObj = 0.60f * anchorEdge + 0.40f * anchorNcc;
+			float currentObj = 0.60f * currentEdge + 0.40f * currentNcc;
+
+			if (abs(dx) + 3 < abs(anchorDx) && anchorObj >= (currentObj - 0.010f)) {
+				dx = anchorDx;
+				dy = anchorDy;
+				rot = anchorRot;
+			}
+		}
+	}
+
+	// Translation fallback should not carry tiny rotational noise in dominant-vertical cases.
+	if (abs(dy) >= abs(dx) * 2 && fabs(rot) <= 2.2f)
+		rot = 0.0f;
+
+	// Final guard: in dominant-vertical low-confidence scenarios, run a dense dx ensemble to avoid dx collapsing to zero.
+	if (pocScore < 0.20f && abs(dy) > height / 3)
+		EnforceVerticalSeamDxEnsemble(img1, img2, width, height, dx, dy);
+
+	if (pocScore < 0.20f && abs(dy) > height / 3)
+		ResolveVerticalDxSignLowConfidence(img1, img2, width, height, dx, dy);
 
 	if (signedShift != nullptr) {
 		signedShift->x = dx;

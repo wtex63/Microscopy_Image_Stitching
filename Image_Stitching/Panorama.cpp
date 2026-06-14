@@ -1606,17 +1606,51 @@ static void ApplyInitialPairOverlapMask(BYTE* mask, int width, int height, doubl
 				if (hasOverlap) {
 					if (verticalDominant) {
 						const int span = MaxInt(1, ovBottom - ovTop);
-						int t = ((y - ovTop) * 255) / span;
-						if (t < 0) t = 0;
-						if (t > 255) t = 255;
-						alpha = secondBelow ? (255 - t) : t;
+						const int seamCenter = ovTop + span / 2;
+						int seamHalfBand = span / 24;
+						if (seamHalfBand < 20) seamHalfBand = 20;
+						if (seamHalfBand > 96) seamHalfBand = 96;
+
+						const int t0 = seamCenter - seamHalfBand;
+						const int t1 = seamCenter + seamHalfBand;
+
+						if (y <= t0) {
+							alpha = secondBelow ? 255 : 0;
+						}
+						else if (y >= t1) {
+							alpha = secondBelow ? 0 : 255;
+						}
+						else {
+							const int denom = MaxInt(1, t1 - t0);
+							int t = ((y - t0) * 255) / denom;
+							if (t < 0) t = 0;
+							if (t > 255) t = 255;
+							alpha = secondBelow ? (255 - t) : t;
+						}
 					}
 					else {
 						const int span = MaxInt(1, ovRight - ovLeft);
-						int t = ((x - ovLeft) * 255) / span;
-						if (t < 0) t = 0;
-						if (t > 255) t = 255;
-						alpha = secondRight ? (255 - t) : t;
+						const int seamCenter = ovLeft + span / 2;
+						int seamHalfBand = span / 24;
+						if (seamHalfBand < 20) seamHalfBand = 20;
+						if (seamHalfBand > 96) seamHalfBand = 96;
+
+						const int t0 = seamCenter - seamHalfBand;
+						const int t1 = seamCenter + seamHalfBand;
+
+						if (x <= t0) {
+							alpha = secondRight ? 255 : 0;
+						}
+						else if (x >= t1) {
+							alpha = secondRight ? 0 : 255;
+						}
+						else {
+							const int denom = MaxInt(1, t1 - t0);
+							int t = ((x - t0) * 255) / denom;
+							if (t < 0) t = 0;
+							if (t > 255) t = 255;
+							alpha = secondRight ? (255 - t) : t;
+						}
 					}
 				}
 				else {
