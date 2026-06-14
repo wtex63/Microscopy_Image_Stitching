@@ -49,3 +49,7 @@ Image_Stitching/x64/
 
 # Generated output images
 SavedImg_*.bmp
+SavedImg_*.png
+
+# Temporary patch/diff artifacts
+diff Image_Stitching/
