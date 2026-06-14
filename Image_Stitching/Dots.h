@@ -230,15 +230,16 @@ static inline bool FindFeatureMatchesRansac(BYTE* img1, BYTE* img2, int width, i
 			int gy1 = abs((int)img1[idx + width] - (int)img1[idx - width]);
 			int gd11 = abs((int)img1[idx + width + 1] - (int)img1[idx - width - 1]);
 			int gd12 = abs((int)img1[idx + width - 1] - (int)img1[idx - width + 1]);
+            // require stronger local gradient/contrast to reduce weak features
 			int s1 = gx1 + gy1 + ((gd11 + gd12) / 2);
-			if (s1 > 60) c1.push_back({ x, y, s1 });
+			if (s1 > 80) c1.push_back({ x, y, s1 });
 
 			int gx2 = abs((int)img2[idx + 1] - (int)img2[idx - 1]);
 			int gy2 = abs((int)img2[idx + width] - (int)img2[idx - width]);
 			int gd21 = abs((int)img2[idx + width + 1] - (int)img2[idx - width - 1]);
 			int gd22 = abs((int)img2[idx + width - 1] - (int)img2[idx - width + 1]);
-			int s2 = gx2 + gy2 + ((gd21 + gd22) / 2);
-			if (s2 > 60) c2.push_back({ x, y, s2 });
+            int s2 = gx2 + gy2 + ((gd21 + gd22) / 2);
+			if (s2 > 80) c2.push_back({ x, y, s2 });
 		}
 	}
 
@@ -415,12 +416,14 @@ static inline bool FindFeatureMatchesRansac(BYTE* img1, BYTE* img2, int width, i
 			}
 		}
 
-		if (bestJ >= 0 && best <= 24 && (float)best < 0.82f * (float)(second > 0 ? second : 1)) {
+        // tighten Hamming distance and ratio test to reduce loose matches
+		if (bestJ >= 0 && best <= 20 && (float)best < 0.75f * (float)(second > 0 ? second : 1)) {
 			matches.push_back({ (int)i, bestJ, best });
 		}
 	}
 
-	if (matches.size() < 8)
+	// require a slightly larger set of good matches before RANSAC
+	if (matches.size() < 10)
 		return TryNccFallback();
 
 	static bool s_seeded = false;
@@ -440,7 +443,8 @@ static inline bool FindFeatureMatchesRansac(BYTE* img1, BYTE* img2, int width, i
 		for (size_t k = 0; k < matches.size(); k++) {
 			int px = f1[matches[k].i1].x - f2[matches[k].i2].x;
 			int py = f1[matches[k].i1].y - f2[matches[k].i2].y;
-			if (abs(px - dx) <= 4 && abs(py - dy) <= 4)
+        // tighten inlier tolerance for RANSAC
+		if (abs(px - dx) <= 3 && abs(py - dy) <= 3)
 				inliers++;
 		}
 
@@ -451,7 +455,7 @@ static inline bool FindFeatureMatchesRansac(BYTE* img1, BYTE* img2, int width, i
 		}
 	}
 
-	if (bestInliers < 6)
+    if (bestInliers < 8)
 		return TryNccFallback();
 
 	inlierIdx.clear();
@@ -462,8 +466,8 @@ static inline bool FindFeatureMatchesRansac(BYTE* img1, BYTE* img2, int width, i
 			inlierIdx.push_back((int)k);
 	}
 
-	inlierRatio = (float)inlierIdx.size() / (float)matches.size();
-	if (inlierRatio < 0.35f || inlierIdx.size() < 6)
+    inlierRatio = (float)inlierIdx.size() / (float)matches.size();
+	if (inlierRatio < 0.40f || inlierIdx.size() < 8)
 		return TryNccFallback();
 
 	int minX = width - 1, minY = height - 1, maxX = 0, maxY = 0;

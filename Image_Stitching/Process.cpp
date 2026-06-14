@@ -5,6 +5,18 @@
 void FFT2D(BYTE* img, double* Output_real, double* Output_img, int width, int height)
 {
 	int i, j;
+    // compute global image mean and subtract to reduce DC component and emphasize contrast
+	long imgSizeTotal = (long)width * (long)height;
+	double imgMean = 0.0;
+	if (img != nullptr && imgSizeTotal > 0) {
+		long sum = 0;
+		for (i = 0; i < height; i++) {
+			for (j = 0; j < width; j++) {
+				sum += (int)img[i * width + j];
+			}
+		}
+		imgMean = double(sum) / double(imgSizeTotal);
+	}
 	double* input_real = new double[width];
 	double* input_im = new double[width];
 	double* out_real = new double[width];
@@ -16,7 +28,8 @@ void FFT2D(BYTE* img, double* Output_real, double* Output_img, int width, int he
 		input_im[j] = 0.0;
 	for (i = 0; i < height; i++) {
 		for (j = 0; j < width; j++)
-			input_real[j] = double(img[i * width + j]);
+            // subtract global mean to reduce DC and boost relative detail
+			input_real[j] = double(img[i * width + j]) - imgMean;
 
 		fft(width, input_real, input_im, out_real, out_im);
 		for (j = 0; j < width; j++) {

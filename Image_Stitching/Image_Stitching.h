@@ -1,5 +1,6 @@
 #pragma once
 #include <atlstr.h>
+#include <chrono>
 #include <msclr\marshal_cppstd.h>
 
 #include "Image.h"
@@ -32,6 +33,26 @@ namespace Image_Stitching {
 			Localization::SetLanguage(Localization::Language::English);
 			ApplyLocalization();
 		}
+
+    // Show the prepared full-resolution preview form prepared by ShowMatchVisualization
+	System::Void OnViewFullResClick(System::Object^ sender, System::EventArgs^ e) {
+		if (this->previewFullResForm != nullptr) {
+			try {
+				this->previewFullResForm->Show();
+				this->previewFullResForm->BringToFront();
+			}
+			catch (...) { }
+		}
+	}
+
+	// Close and dispose the full-resolution preview when the "Continue" button is pressed
+	System::Void OnFullResContinueClick(System::Object^ sender, System::EventArgs^ e) {
+		if (this->previewFullResForm != nullptr) {
+			try { this->previewFullResForm->Close(); } catch (...) { }
+			try { delete this->previewFullResForm; } catch (...) { }
+			this->previewFullResForm = nullptr;
+		}
+	}
 
 	protected:
 		/// <summary>
@@ -176,6 +197,9 @@ namespace Image_Stitching {
 
 
 	private: System::Windows::Forms::Button^ saveButton;
+	private: System::Windows::Forms::CheckBox^ autoClosePreviewChk;
+	private: System::Windows::Forms::CheckBox^ useGpuPhaseChk;
+	private: System::Windows::Forms::Form^ previewFullResForm = nullptr;
 
 		   void FreePictureBox(PictureBox^ pictureBox) {
 			   if (pictureBox->Image != nullptr) {
@@ -531,22 +555,29 @@ namespace Image_Stitching {
 		   void ShowMatchVisualization(BYTE* img1, BYTE* img2, int width, int height, xy* img1Dots, xy* img2Dots) {
 			   if (img1 == nullptr || img2 == nullptr || img1Dots == nullptr || img2Dots == nullptr) return;
 
-			   // Create visualization form
+               // Create visualization form
 			   Form^ vizForm = gcnew Form();
 			   vizForm->Text = "Image Comparison - Matched Points";
 			   vizForm->StartPosition = FormStartPosition::CenterParent;
 			   vizForm->Owner = this;
-			   vizForm->Width = width * 2 + 40;
-			   vizForm->Height = height + 100;
 
-			   // Create panel for images
+			   // Cap form size to the working area so it fits on screen
+			   System::Drawing::Rectangle work = System::Windows::Forms::Screen::GetWorkingArea(this);
+			   int maxFormW = work.Width - 40;
+			   int maxFormH = work.Height - 80;
+			   int desiredW = width * 2 + 40;
+			   int desiredH = height + 100;
+			   vizForm->Width = Math::Min(desiredW, maxFormW);
+			   vizForm->Height = Math::Min(desiredH, maxFormH);
+
+			   // Create panel for images (client area minus margins so scrollbars appear when needed)
 			   Panel^ vizPanel = gcnew Panel();
 			   vizPanel->Left = 10;
 			   vizPanel->Top = 10;
-			   vizPanel->Width = width * 2 + 20;
-			   vizPanel->Height = height + 10;
+			   vizPanel->Width = vizForm->ClientSize.Width - 20;
+			   vizPanel->Height = vizForm->ClientSize.Height - 80;
 			   vizPanel->BorderStyle = BorderStyle::FixedSingle;
-			   vizPanel->AutoScroll = false;
+			   vizPanel->AutoScroll = true;
 			   vizPanel->BackColor = Color::White;
 
 			   // Create combined bitmap (both images side-by-side)
@@ -617,21 +648,46 @@ namespace Image_Stitching {
 			   delete greenBrush;
 			   delete g;
 
-			   // Create PictureBox to display combined image
+               // Create PictureBox to display combined image
 			   PictureBox^ picBox = gcnew PictureBox();
-			   picBox->Image = combined;
-			   picBox->SizeMode = PictureBoxSizeMode::AutoSize;
 			   picBox->Left = 0;
 			   picBox->Top = 0;
+
+			   // Decide whether to downscale to fit the panel
+			   double panelW = (double)vizPanel->Width;
+			   double panelH = (double)vizPanel->Height;
+			   double scale = 1.0;
+			   if (combined->Width > 0 && combined->Height > 0) {
+				   scale = Math::Min(1.0, Math::Min(panelW / (double)combined->Width, panelH / (double)combined->Height));
+			   }
+
+			   if (scale < 1.0) {
+				   int dispW = Math::Max(1, (int)System::Math::Round(combined->Width * scale));
+				   int dispH = Math::Max(1, (int)System::Math::Round(combined->Height * scale));
+				   Bitmap^ scaled = gcnew Bitmap(dispW, dispH, System::Drawing::Imaging::PixelFormat::Format24bppRgb);
+				   Graphics^ g2 = Graphics::FromImage(scaled);
+				   g2->InterpolationMode = System::Drawing::Drawing2D::InterpolationMode::HighQualityBicubic;
+				   g2->DrawImage(combined, System::Drawing::Rectangle(0, 0, dispW, dispH));
+				   delete g2;
+				   picBox->Image = scaled;
+				   picBox->SizeMode = PictureBoxSizeMode::Normal;
+				   picBox->Width = dispW;
+				   picBox->Height = dispH;
+			   }
+			   else {
+				   picBox->Image = combined;
+				   picBox->SizeMode = PictureBoxSizeMode::AutoSize;
+			   }
+
 			   vizPanel->Controls->Add(picBox);
 
-			   // Create close button
+               // Create close button
 			   Button^ closeBtn = gcnew Button();
 			   closeBtn->Text = "Continue";
 			   closeBtn->Width = 150;
 			   closeBtn->Height = 30;
-			   closeBtn->Left = (vizForm->Width - closeBtn->Width) / 2;
-			   closeBtn->Top = height + 25;
+               closeBtn->Left = (vizForm->ClientSize.Width - closeBtn->Width) / 2;
+			   closeBtn->Top = vizForm->ClientSize.Height - closeBtn->Height - 10;
 			   closeBtn->DialogResult = System::Windows::Forms::DialogResult::OK;
 
 			   // Create label with match count
@@ -646,20 +702,70 @@ namespace Image_Stitching {
 			   vizForm->Controls->Add(matchLbl);
 			   vizForm->AcceptButton = closeBtn;
 
-			   // Auto-close preview so stitching can continue to the next stage.
-			   Timer^ autoCloseTimer = gcnew Timer();
-			   autoCloseTimer->Interval = 1500;
-			   autoCloseTimer->Tag = vizForm;
-			   autoCloseTimer->Tick += gcnew EventHandler(this, &Image_Stitching::OnAutoCloseMatchPreviewTick);
-			   autoCloseTimer->Start();
+			   // Button to open full-resolution view
+			   Button^ fullResBtn = gcnew Button();
+			   fullResBtn->Text = "View full resolution";
+			   fullResBtn->Width = 170;
+			   fullResBtn->Height = 30;
+               fullResBtn->Left = vizForm->ClientSize.Width - fullResBtn->Width - 24;
+			   fullResBtn->Top = 10;
+			   fullResBtn->Click += gcnew EventHandler(this, &Image_Stitching::OnViewFullResClick);
+			   vizForm->Controls->Add(fullResBtn);
+
+			   // Prepare full-resolution form (hidden) so user can view full-res when requested
+			   Form^ fullForm = gcnew Form();
+			   fullForm->Text = "Full Resolution Preview";
+			   fullForm->StartPosition = FormStartPosition::CenterParent;
+			   // size to working area
+			   System::Drawing::Rectangle work2 = System::Windows::Forms::Screen::GetWorkingArea(this);
+			   fullForm->Width = Math::Min(combined->Width + 40, work2.Width - 40);
+			   fullForm->Height = Math::Min(combined->Height + 80, work2.Height - 80);
+			   Panel^ fullPanel = gcnew Panel();
+			   fullPanel->Left = 5; fullPanel->Top = 5;
+			   fullPanel->Width = fullForm->ClientSize.Width - 10;
+			   fullPanel->Height = fullForm->ClientSize.Height - 20;
+			   fullPanel->AutoScroll = true;
+			   fullPanel->BorderStyle = BorderStyle::FixedSingle;
+               PictureBox^ fullPic = gcnew PictureBox();
+			   // clone combined so disposing the preview dialog does not invalidate the full-res image
+			   fullPic->Image = (Bitmap^)combined->Clone(); // full resolution image
+			   fullPic->SizeMode = PictureBoxSizeMode::AutoSize;
+			   fullPic->Left = 0; fullPic->Top = 0;
+			   fullPanel->Controls->Add(fullPic);
+			   fullForm->Controls->Add(fullPanel);
+
+			   // Create a Continue button on the full-resolution view so user can close it conveniently
+			   Button^ fullCloseBtn = gcnew Button();
+			   fullCloseBtn->Text = "Continue";
+			   fullCloseBtn->Width = 150;
+			   fullCloseBtn->Height = 30;
+			   fullCloseBtn->Left = (fullForm->ClientSize.Width - fullCloseBtn->Width) / 2;
+			   fullCloseBtn->Top = Math::Min(fullForm->ClientSize.Height - fullCloseBtn->Height - 10, fullPanel->Top + fullPanel->Height + 5);
+			   fullCloseBtn->Anchor = static_cast<AnchorStyles>(AnchorStyles::Bottom | AnchorStyles::Left);
+			   fullCloseBtn->Click += gcnew EventHandler(this, &Image_Stitching::OnFullResContinueClick);
+			   fullForm->Controls->Add(fullCloseBtn);
+			   // store for Show on demand
+			   this->previewFullResForm = fullForm;
+
+			   // Auto-close preview only if the user enabled the option (checkbox)
+			   Timer^ autoCloseTimer = nullptr;
+			   if (this->autoClosePreviewChk != nullptr && this->autoClosePreviewChk->Checked) {
+				   autoCloseTimer = gcnew Timer();
+				   autoCloseTimer->Interval = 1500; // 1.5s
+				   autoCloseTimer->Tag = vizForm;
+				   autoCloseTimer->Tick += gcnew EventHandler(this, &Image_Stitching::OnAutoCloseMatchPreviewTick);
+				   autoCloseTimer->Start();
+			   }
 
 			   // Show form as modal dialog
 			   vizForm->ShowDialog(this);
 
 			   // Cleanup
-			   autoCloseTimer->Stop();
-			   autoCloseTimer->Tick -= gcnew EventHandler(this, &Image_Stitching::OnAutoCloseMatchPreviewTick);
-			   delete autoCloseTimer;
+			   if (autoCloseTimer != nullptr) {
+				   autoCloseTimer->Stop();
+				   autoCloseTimer->Tick -= gcnew EventHandler(this, &Image_Stitching::OnAutoCloseMatchPreviewTick);
+				   delete autoCloseTimer;
+			   }
 			   delete vizForm;
 		   }
 
@@ -678,6 +784,8 @@ namespace Image_Stitching {
 			   this->imgIndexLbl = (gcnew System::Windows::Forms::Label());
 			   this->label14 = (gcnew System::Windows::Forms::Label());
 			   this->saveButton = (gcnew System::Windows::Forms::Button());
+               this->autoClosePreviewChk = (gcnew System::Windows::Forms::CheckBox());
+			   this->useGpuPhaseChk = (gcnew System::Windows::Forms::CheckBox());
 			   this->statusPanel = (gcnew System::Windows::Forms::Panel());
 			   this->statusTitleLbl = (gcnew System::Windows::Forms::Label());
 			   this->statusConfidenceLbl = (gcnew System::Windows::Forms::Label());
@@ -692,6 +800,22 @@ namespace Image_Stitching {
 			   this->menuStrip1->SuspendLayout();
 			   this->imagePanel->SuspendLayout();
 			   this->statusPanel->SuspendLayout();
+       // autoClosePreviewChk
+		this->autoClosePreviewChk->Location = System::Drawing::Point(840, 46);
+		this->autoClosePreviewChk->Name = L"autoClosePreviewChk";
+		this->autoClosePreviewChk->Size = System::Drawing::Size(150, 24);
+		this->autoClosePreviewChk->TabIndex = 38;
+		this->autoClosePreviewChk->Text = Localization::T("AutoClosePreview");
+		this->autoClosePreviewChk->AutoSize = true;
+		this->autoClosePreviewChk->Checked = false;
+		// useGpuPhaseChk
+		this->useGpuPhaseChk->Location = System::Drawing::Point(1010, 46);
+		this->useGpuPhaseChk->Name = L"useGpuPhaseChk";
+		this->useGpuPhaseChk->Size = System::Drawing::Size(210, 24);
+		this->useGpuPhaseChk->TabIndex = 39;
+		this->useGpuPhaseChk->Text = L"Use GPU phase backend";
+		this->useGpuPhaseChk->AutoSize = true;
+		this->useGpuPhaseChk->Checked = false;
 			   (cli::safe_cast<System::ComponentModel::ISupportInitialize^>(this->pictureBox4))->BeginInit();
 			   this->SuspendLayout();
 			   // 
@@ -923,8 +1047,10 @@ namespace Image_Stitching {
 			   this->AutoScaleMode = System::Windows::Forms::AutoScaleMode::Font;
 			   this->ClientSize = System::Drawing::Size(1939, 889);
 			   this->Controls->Add(this->logTextBox);
-			   this->Controls->Add(this->statusPanel);
+               this->Controls->Add(this->statusPanel);
 			   this->Controls->Add(this->saveButton);
+			   this->Controls->Add(this->autoClosePreviewChk);
+			   this->Controls->Add(this->useGpuPhaseChk);
 			   this->Controls->Add(this->imgIndexLbl);
 			   this->Controls->Add(this->label14);
 			   this->Controls->Add(this->labelResultS);
@@ -958,6 +1084,10 @@ namespace Image_Stitching {
 			this->turkishToolStripMenuItem->Text = Localization::T("MenuTurkish");
 			this->saveButton->Text = Localization::T("ButtonSave");
 			this->label14->Text = Localization::T("LabelImage");
+        if (this->autoClosePreviewChk != nullptr)
+			this->autoClosePreviewChk->Text = Localization::T("AutoClosePreview");
+		if (this->useGpuPhaseChk != nullptr)
+			this->useGpuPhaseChk->Text = L"Use GPU phase backend";
 			this->statusTitleLbl->Text = Localization::T("StatusTitle");
 			this->statusConfidenceLbl->Text = Localization::T("StatusConfidence");
 			this->statusInlierLbl->Text = Localization::T("StatusInlierRatio");
@@ -1011,11 +1141,18 @@ namespace Image_Stitching {
 				MessageBox::Show("Please select at least two images to stitch.");
 				return;
 			}
+			SetPhaseCorrelationBackend((this->useGpuPhaseChk != nullptr && this->useGpuPhaseChk->Checked)
+				? PhaseCorrelationBackendGpu
+				: PhaseCorrelationBackendCpu);
 			imgCounter = 0;
 			lineCounter = 0;
 			int totalPairs = selectedCount - 1;
 			if (logTextBox != nullptr) logTextBox->Clear();
 			AppendLog(String::Format(Localization::T("LogStitchStart"), totalPairs));
+			AppendLog(String::Format("Phase backend: {0}", gcnew String(GetPhaseCorrelationBackendName())));
+			if (!IsPhaseCorrelationGpuAvailable()) {
+				AppendLog("GPU phase backend is not compiled in this build; using CPU fallback.");
+			}
 			latestColorOutput = DeleteByteArray(latestColorOutput);
 			latestColorWidth = 0;
 			latestColorHeight = 0;
@@ -1048,6 +1185,11 @@ namespace Image_Stitching {
 			}
 
 			while (imgCounter < openFileDialog1->FileNames->GetLength(0) - 1) {
+				double pairFft1Ms = -1.0;
+				double pairFft2Ms = -1.0;
+				double pairPhaseMs = -1.0;
+				double pairFallbackMs = -1.0;
+				double pairBlendMs = -1.0;
 				AppendLog(String::Format(Localization::T("LogProcessingPair"), imgCounter + 1, totalPairs));
 
 				if (imgCounter == 0) {
@@ -1073,7 +1215,10 @@ namespace Image_Stitching {
 					outReal[0] = new double[width * height];
 					outImag[0] = new double[width * height];
 					AppendLog(Localization::T("LogFFTFirst"));
+					auto tFft1Start = std::chrono::high_resolution_clock::now();
 					FFT2D(intensity1, outReal[0], outImag[0], width, height);
+					auto tFft1End = std::chrono::high_resolution_clock::now();
+					pairFft1Ms = std::chrono::duration_cast<std::chrono::duration<double, std::milli>>(tFft1End - tFft1Start).count();
 
 					CString path2 = openFileDialog1->FileNames[imgCounter + 1];
 					int nextWidth = 0, nextHeight = 0;
@@ -1103,16 +1248,22 @@ namespace Image_Stitching {
 					outReal[1] = new double[width * height];
 					outImag[1] = new double[width * height];
 					AppendLog(Localization::T("LogFFTSecond"));
+					auto tFft2Start = std::chrono::high_resolution_clock::now();
 					FFT2D(intensity2, outReal[1], outImag[1], width, height);
+					auto tFft2End = std::chrono::high_resolution_clock::now();
+					pairFft2Ms = std::chrono::duration_cast<std::chrono::duration<double, std::milli>>(tFft2End - tFft2Start).count();
 
 					AppendLog(Localization::T("LogPhaseCorrelationRunning"));
+					auto tPhaseStart = std::chrono::high_resolution_clock::now();
 					double* POC = PhaseCorrelationWithUiHeartbeat(outReal[0], outImag[0], outReal[1], outImag[1], width, height);
+					auto tPhaseEnd = std::chrono::high_resolution_clock::now();
+					pairPhaseMs = std::chrono::duration_cast<std::chrono::duration<double, std::milli>>(tPhaseEnd - tPhaseStart).count();
 					AppendLog(Localization::T("LogPeakSearch"));
 					MaxPOC(POC, pocDot, width, height);
 					AppendLog(Localization::T("LogComputingShift"));
 
-					DeleteDoubleArray(outReal[0]);
-					DeleteDoubleArray(outImag[0]);
+					outReal[0] = DeleteDoubleArray(outReal[0]);
+					outImag[0] = DeleteDoubleArray(outImag[0]);
 					POC = DeleteDoubleArray(POC);
 
 					xy signedShift = { 0, 0 };
@@ -1120,7 +1271,14 @@ namespace Image_Stitching {
 					float fallbackCandidateScore = -1.0f;
 					float fallbackCandidateObjective = -1.0f;
 					bool fallbackCandidateApplied = false;
-					currCornerID = ZoneDetection(intensity1, intensity2, width, height, currVec, pocDot, &signedShift, &signedRotationDeg, &fallbackCandidateScore, &fallbackCandidateObjective, &fallbackCandidateApplied);
+					double fallbackLocalMs = -1.0;
+					double fallbackGlobalMs = -1.0;
+					double fallbackEdgeMs = -1.0;
+					currCornerID = ZoneDetection(intensity1, intensity2, width, height, currVec, pocDot, &signedShift, &signedRotationDeg, &fallbackCandidateScore, &fallbackCandidateObjective, &fallbackCandidateApplied, &fallbackLocalMs, &fallbackGlobalMs, &fallbackEdgeMs);
+					pairFallbackMs = 0.0;
+					if (fallbackLocalMs > 0.0) pairFallbackMs += fallbackLocalMs;
+					if (fallbackGlobalMs > 0.0) pairFallbackMs += fallbackGlobalMs;
+					if (fallbackEdgeMs > 0.0) pairFallbackMs += fallbackEdgeMs;
 					if (fallbackCandidateObjective >= -0.5f) {
 						AppendLog(String::Format("Fallback candidate: score={0:F3}, objective={1:F3}, applied={2}", fallbackCandidateScore, fallbackCandidateObjective, fallbackCandidateApplied ? "yes" : "no"));
 					}
@@ -1188,26 +1346,39 @@ namespace Image_Stitching {
 						}
 					}
 
+					bool useDirectTranslationHomography = useTranslationModel && (img1Dots == NULL || img2Dots == NULL);
 					if (img1Dots == NULL || img2Dots == NULL) {
-						AppendLog(Localization::T("LogMatchFailed"));
-						MessageBox::Show(Localization::T("MsgMissingMatches"));
+						if (!useDirectTranslationHomography) {
+							AppendLog(Localization::T("LogMatchFailed"));
+							MessageBox::Show(Localization::T("MsgMissingMatches"));
+						}
+						else {
+							AppendLog("Point-pair matching unavailable; using direct translation homography.");
+						}
 					}
-					else {
-						AppendLog(Localization::T("LogMatchingHomography"));
-						ShowMatchVisualization(intensity1, intensity2, width, height, img1Dots, img2Dots);
-						AppendLog("Match visualization closed - proceeding with panorama generation");
-						LineUpdate(currCornerID, currVec);
 
-						for (int i = 0; i < 4; i++) {
-							match1[0][i] = double(img1Dots[i].x);
-							match1[1][i] = double(img1Dots[i].y);
-							match1[2][i] = 1.0;
-							match2[0][i] = double(img2Dots[i].x);
-							match2[1][i] = double(img2Dots[i].y);
-							match2[2][i] = 1.0;
+					if (img1Dots != NULL || useDirectTranslationHomography) {
+						double** homography = nullptr;
+						if (!useDirectTranslationHomography) {
+							AppendLog(Localization::T("LogMatchingHomography"));
+							ShowMatchVisualization(intensity1, intensity2, width, height, img1Dots, img2Dots);
+							AppendLog("Match visualization closed - proceeding with panorama generation");
+
+							for (int i = 0; i < 4; i++) {
+								match1[0][i] = double(img1Dots[i].x);
+								match1[1][i] = double(img1Dots[i].y);
+								match1[2][i] = 1.0;
+								match2[0][i] = double(img2Dots[i].x);
+								match2[1][i] = double(img2Dots[i].y);
+								match2[2][i] = 1.0;
+							}
+							homography = homography2d(match1, match2, 4);
+						}
+						else {
+							homography = CreateTranslationHomography(currCornerID, currVec);
 						}
 
-						double** homography = homography2d(match1, match2, 4);
+						LineUpdate(currCornerID, currVec);
 						if (useTranslationModel) {
 							AppendLog(Localization::T("LogTranslationFallback"));
 							AppendLog(String::Format("Translation shift used: dx={0}, dy={1}, corner={2}", signedShift.x, signedShift.y, currCornerID));
@@ -1223,9 +1394,12 @@ namespace Image_Stitching {
 							else isFirstLine = false;
 
 							AppendLog(Localization::T("LogBlendingPanorama"));
+							auto tBlendStart = std::chrono::high_resolution_clock::now();
 							LaplacePyramid(homography, buffer1, buffer2, width, height, width, height, LaplacePyramid1, LaplacePyramid2, width1, height1, *currPanoSize, position);
 							panorama1 = PanaromicImage(homography, width, height, *currPanoSize, position, LaplacePyramid1, LaplacePyramid2, width1, height1, width, height, isFirstLine, currCornerID, currVec);
 							ShowColorImage(panorama1, currPanoSize->x, currPanoSize->y);
+							auto tBlendEnd = std::chrono::high_resolution_clock::now();
+							pairBlendMs = std::chrono::duration_cast<std::chrono::duration<double, std::milli>>(tBlendEnd - tBlendStart).count();
 							AppendLog(String::Format(Localization::T("LogPanoramaUpdated"), currPanoSize->x, currPanoSize->y));
 
 							prevPanoSize->x = currPanoSize->x;
@@ -1283,41 +1457,54 @@ namespace Image_Stitching {
 					outImag[1] = new double[width * height];
 
 					AppendLog(Localization::T("LogFFTSecond"));
+					auto tFft2Start = std::chrono::high_resolution_clock::now();
 					FFT2D(intensity2, outReal[1], outImag[1], width, height);
+					auto tFft2End = std::chrono::high_resolution_clock::now();
+					pairFft2Ms = std::chrono::duration_cast<std::chrono::duration<double, std::milli>>(tFft2End - tFft2Start).count();
 
 					AppendLog(Localization::T("LogPhaseCorrelationRunning"));
+					auto tPhaseStart = std::chrono::high_resolution_clock::now();
 					double* POC = PhaseCorrelationWithUiHeartbeat(outReal[0], outImag[0], outReal[1], outImag[1], width, height);
+					auto tPhaseEnd = std::chrono::high_resolution_clock::now();
+					pairPhaseMs = std::chrono::duration_cast<std::chrono::duration<double, std::milli>>(tPhaseEnd - tPhaseStart).count();
 					AppendLog(Localization::T("LogPeakSearch"));
 					MaxPOC(POC, pocDot, width, height);
 					AppendLog(Localization::T("LogComputingShift"));
 
-					DeleteDoubleArray(outReal[0]);
-					DeleteDoubleArray(outImag[0]);
-					POC = DeleteDoubleArray(POC);
+						outReal[0] = DeleteDoubleArray(outReal[0]);
+						outImag[0] = DeleteDoubleArray(outImag[0]);
+						POC = DeleteDoubleArray(POC);
 
-					xy signedShift = { 0, 0 };
-					float signedRotationDeg = 0.0f;
-					float fallbackCandidateScore = -1.0f;
-					float fallbackCandidateObjective = -1.0f;
-					bool fallbackCandidateApplied = false;
-					currCornerID = ZoneDetection(intensity1, intensity2, width, height, currVec, pocDot, &signedShift, &signedRotationDeg, &fallbackCandidateScore, &fallbackCandidateObjective, &fallbackCandidateApplied);
-					if (fallbackCandidateObjective >= -0.5f) {
-						AppendLog(String::Format("Fallback candidate: score={0:F3}, objective={1:F3}, applied={2}", fallbackCandidateScore, fallbackCandidateObjective, fallbackCandidateApplied ? "yes" : "no"));
-					}
-					float phaseConfidence = PhaseShiftConfidence(intensity1, intensity2, width, height, pocDot);
-					AppendLog(String::Format(Localization::T("LogPhaseConfidence"), phaseConfidence));
-					UpdateStatusPanel("MatcherPhaseFast", phaseConfidence, -1.0, false);
+						xy signedShift = { 0, 0 };
+						float signedRotationDeg = 0.0f;
+						float fallbackCandidateScore = -1.0f;
+						float fallbackCandidateObjective = -1.0f;
+						bool fallbackCandidateApplied = false;
+						double fallbackLocalMs = -1.0;
+						double fallbackGlobalMs = -1.0;
+						double fallbackEdgeMs = -1.0;
+						currCornerID = ZoneDetection(intensity1, intensity2, width, height, currVec, pocDot, &signedShift, &signedRotationDeg, &fallbackCandidateScore, &fallbackCandidateObjective, &fallbackCandidateApplied, &fallbackLocalMs, &fallbackGlobalMs, &fallbackEdgeMs);
+						pairFallbackMs = 0.0;
+						if (fallbackLocalMs > 0.0) pairFallbackMs += fallbackLocalMs;
+						if (fallbackGlobalMs > 0.0) pairFallbackMs += fallbackGlobalMs;
+						if (fallbackEdgeMs > 0.0) pairFallbackMs += fallbackEdgeMs;
+						if (fallbackCandidateObjective >= -0.5f) {
+							AppendLog(String::Format("Fallback candidate: score={0:F3}, objective={1:F3}, applied={2}", fallbackCandidateScore, fallbackCandidateObjective, fallbackCandidateApplied ? "yes" : "no"));
+						}
+						float phaseConfidence = PhaseShiftConfidence(intensity1, intensity2, width, height, pocDot);
+						AppendLog(String::Format(Localization::T("LogPhaseConfidence"), phaseConfidence));
+						UpdateStatusPanel("MatcherPhaseFast", phaseConfidence, -1.0, false);
 
-					xy featureImg1[4] = {};
-					xy featureImg2[4] = {};
-					xy featureShift = { 0, 0 };
-					float featureInlierRatio = 0.0f;
-					bool usedFeatureFallback = false;
-					bool useTranslationModel = false;
+						xy featureImg1[4] = {};
+						xy featureImg2[4] = {};
+						xy featureShift = { 0, 0 };
+						float featureInlierRatio = 0.0f;
+						bool usedFeatureFallback = false;
+						bool useTranslationModel = false;
 
-					if (phaseConfidence < 0.70f) {
-						AppendLog(Localization::T("LogFeatureFallbackStart"));
-						usedFeatureFallback = FindFeatureMatchesRansac(intensity1, intensity2, width, height, featureImg1, featureImg2, featureInlierRatio, &featureShift);
+						if (phaseConfidence < 0.70f) {
+							AppendLog(Localization::T("LogFeatureFallbackStart"));
+							usedFeatureFallback = FindFeatureMatchesRansac(intensity1, intensity2, width, height, featureImg1, featureImg2, featureInlierRatio, &featureShift);
 						if (usedFeatureFallback) {
 							currVec->x = featureShift.x;
 							currVec->y = featureShift.y;
@@ -1403,9 +1590,12 @@ namespace Image_Stitching {
 							else isFirstLine = false;
 
 							AppendLog(Localization::T("LogBlendingPanorama"));
+							auto tBlendStart = std::chrono::high_resolution_clock::now();
 							LaplacePyramid(homography, panorama1, buffer2, prevPanoSize->x, prevPanoSize->y, width, height, LaplacePyramid1, LaplacePyramid2, width1, height1, *currPanoSize, position);
 							panorama2 = PanaromicImage(homography, prevPanoSize->x, prevPanoSize->y, *currPanoSize, position, LaplacePyramid1, LaplacePyramid2, width1, height1, width, height, isFirstLine, currCornerID, currVec);
 							ShowColorImage(panorama2, currPanoSize->x, currPanoSize->y);
+							auto tBlendEnd = std::chrono::high_resolution_clock::now();
+							pairBlendMs = std::chrono::duration_cast<std::chrono::duration<double, std::milli>>(tBlendEnd - tBlendStart).count();
 							AppendLog(String::Format(Localization::T("LogPanoramaUpdated"), currPanoSize->x, currPanoSize->y));
 							UpdatePrevVec(currCornerID, prevVec, currVec);
 
@@ -1435,6 +1625,12 @@ namespace Image_Stitching {
 				}
 				imgCounter++;
 				UpdateStatusPanel(nullptr, statusPhaseConfidence, statusInlierRatio, statusInlierRatio >= 0.0);
+				String^ fft1Text = (pairFft1Ms >= 0.0) ? pairFft1Ms.ToString("F0") + " ms" : "n/a";
+				String^ fft2Text = (pairFft2Ms >= 0.0) ? pairFft2Ms.ToString("F0") + " ms" : "n/a";
+				String^ phaseText = (pairPhaseMs >= 0.0) ? pairPhaseMs.ToString("F0") + " ms" : "n/a";
+				String^ fallbackText = (pairFallbackMs >= 0.0) ? pairFallbackMs.ToString("F0") + " ms" : "n/a";
+				String^ blendText = (pairBlendMs >= 0.0) ? pairBlendMs.ToString("F0") + " ms" : "n/a";
+				AppendLog(String::Format("Pair timing summary: FFT1={0}, FFT2={1}, Phase={2}, Fallback={3}, Blend={4}", fft1Text, fft2Text, phaseText, fallbackText, blendText));
 				AppendLog(String::Format(Localization::T("LogFinishedPair"), imgCounter, totalPairs));
 				imgIndexLbl->Text = (imgCounter + 1).ToString();
 				imgIndexLbl->Refresh();

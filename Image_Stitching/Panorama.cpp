@@ -554,6 +554,86 @@ BYTE* ImageToResized(double** H, BYTE* Raw, int Width, int Height, xy Size, xy p
 	return resizedImg;
 }
 
+BYTE* FastTranslationBlend(double** H, BYTE* panoImg1, BYTE* img2, int panoWidth, int panoHeight, int Width, int Height, xy newPanoSize, xy panoPosition)
+{
+	if (panoImg1 == nullptr || img2 == nullptr || newPanoSize.x <= 0 || newPanoSize.y <= 0)
+		return nullptr;
+
+	const int sizeX = newPanoSize.x;
+	const int sizeY = newPanoSize.y;
+	const size_t pixelCount = (size_t)sizeX * (size_t)sizeY;
+
+	BYTE* panoResized = PanoToResized(panoImg1, panoWidth, panoHeight, newPanoSize, panoPosition);
+	BYTE* img2Resized = ImageToResized(H, img2, Width, Height, newPanoSize, panoPosition);
+	if (panoResized == nullptr || img2Resized == nullptr) {
+		delete[] panoResized;
+		delete[] img2Resized;
+		return nullptr;
+	}
+
+	BYTE* out = new BYTE[pixelCount * 3];
+	BYTE* mask1 = new BYTE[pixelCount]();
+	BYTE* mask2 = new BYTE[pixelCount]();
+
+	// Existing panorama coverage in resized canvas is a rectangle offset by panoPosition.
+	#pragma omp parallel for schedule(static)
+	for (int y = 0; y < panoHeight; y++) {
+		for (int x = 0; x < panoWidth; x++) {
+			int dx = x + panoPosition.x;
+			int dy = y + panoPosition.y;
+			if (dx >= 0 && dx < sizeX && dy >= 0 && dy < sizeY) {
+				size_t m = (size_t)dy * (size_t)sizeX + (size_t)dx;
+				mask1[m] = 1;
+			}
+		}
+	}
+
+	// New image coverage from homography warp.
+	#pragma omp parallel for schedule(static)
+	for (int y = 0; y < Height; y++) {
+		for (int x = 0; x < Width; x++) {
+			xy p = Transfer(H, x, y);
+			int dx = p.x + panoPosition.x;
+			int dy = p.y + panoPosition.y;
+			if (dx >= 0 && dx < sizeX && dy >= 0 && dy < sizeY) {
+				size_t m = (size_t)dy * (size_t)sizeX + (size_t)dx;
+				mask2[m] = 1;
+			}
+		}
+	}
+
+	#pragma omp parallel for schedule(static)
+	for (int y = 0; y < sizeY; y++) {
+		for (int x = 0; x < sizeX; x++) {
+			size_t m = (size_t)y * (size_t)sizeX + (size_t)x;
+			size_t b = (size_t)(sizeY - y - 1) * (size_t)sizeX * 3 + (size_t)x * 3;
+			bool has1 = (mask1[m] != 0);
+			bool has2 = (mask2[m] != 0);
+			if (has1 && has2) {
+				out[b] = (BYTE)(((int)panoResized[b] + (int)img2Resized[b]) / 2);
+				out[b + 1] = (BYTE)(((int)panoResized[b + 1] + (int)img2Resized[b + 1]) / 2);
+				out[b + 2] = (BYTE)(((int)panoResized[b + 2] + (int)img2Resized[b + 2]) / 2);
+			}
+			else if (has2) {
+				out[b] = img2Resized[b];
+				out[b + 1] = img2Resized[b + 1];
+				out[b + 2] = img2Resized[b + 2];
+			}
+			else {
+				out[b] = panoResized[b];
+				out[b + 1] = panoResized[b + 1];
+				out[b + 2] = panoResized[b + 2];
+			}
+		}
+	}
+
+	delete[] mask1;
+	delete[] mask2;
+	delete[] panoResized;
+	delete[] img2Resized;
+	return out;
+}
+
 void LaplacePyramid(double** H, BYTE* panoImg1, BYTE* img2, int panoWidth, int panoHeight, int Width, int Height, BYTE2** LaplacePyramid1, BYTE2** LaplacePyramid2, int& width, int& height, xy newPanoSize, xy panoPosition)
 {
 

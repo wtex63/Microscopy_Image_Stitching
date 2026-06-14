@@ -2,7 +2,17 @@
 #include "Process.h"
 #include <math.h>
 #include <vector>
+#include <chrono>
+#include <atomic>
 #include <cstdint>
+
+#if defined(USE_OPENCV_CUDA)
+#include <opencv2/core.hpp>
+#include <opencv2/core/cuda.hpp>
+#include <opencv2/cudaarithm.hpp>
+#endif
+
+static constexpr int kRotatedFallbackBudgetMs = 2200;
 
 
 double* Conjugate(double* imaginary, int width, int height) {
@@ -10,9 +20,9 @@ double* Conjugate(double* imaginary, int width, int height) {
 	long imageSize = width * height;
 	double* conjugated = new double[imageSize];
 
-#pragma omp parallel num_threads(NUM_THREADS) shared(imageSize, conjugated, imaginary)
+#pragma omp parallel shared(imageSize, conjugated, imaginary)
 	{
-#pragma omp for schedule(dynamic) nowait
+#pragma omp for schedule(static) nowait
 		for (long i = 0; i < imageSize; i++)
 			conjugated[i] = -imaginary[i];
 	}
@@ -20,13 +30,62 @@ double* Conjugate(double* imaginary, int width, int height) {
 	return conjugated;
 }
 
+// Global toggle for hard overlap constraint. Default enabled.
+static std::atomic<bool> g_hardOverlapCheckEnabled(true);
+static std::atomic<int> g_phaseCorrelationBackend((int)PhaseCorrelationBackendCpu);
+
+#if defined(USE_OPENCV_CUDA)
+static constexpr bool kPhaseCorrelationGpuCompiled = true;
+#else
+static constexpr bool kPhaseCorrelationGpuCompiled = false;
+#endif
+
+void SetHardOverlapCheck(bool enabled) {
+	g_hardOverlapCheckEnabled.store(enabled);
+}
+
+bool GetHardOverlapCheck() {
+	return g_hardOverlapCheckEnabled.load();
+}
+
+void SetPhaseCorrelationBackend(PhaseCorrelationBackend backend) {
+	g_phaseCorrelationBackend.store((int)backend);
+}
+
+PhaseCorrelationBackend GetPhaseCorrelationBackend() {
+	int val = g_phaseCorrelationBackend.load();
+	if (val == (int)PhaseCorrelationBackendGpu)
+		return PhaseCorrelationBackendGpu;
+	return PhaseCorrelationBackendCpu;
+}
+
+bool IsPhaseCorrelationGpuAvailable() {
+	#if defined(USE_OPENCV_CUDA)
+	try {
+		return cv::cuda::getCudaEnabledDeviceCount() > 0;
+	}
+	catch (...) {
+		return false;
+	}
+	#endif
+	return kPhaseCorrelationGpuCompiled;
+}
+
+const char* GetPhaseCorrelationBackendName() {
+	if (GetPhaseCorrelationBackend() == PhaseCorrelationBackendGpu && IsPhaseCorrelationGpuAvailable())
+		return "GPU";
+	if (GetPhaseCorrelationBackend() == PhaseCorrelationBackendGpu && !IsPhaseCorrelationGpuAvailable())
+		return "GPU requested (fallback CPU)";
+	return "CPU";
+}
+
 void ComplexMult(double* fft1Real, double* fft1Imag, double* fft2Real, double* fft2Imag, double* outReal, double* outImag, int width, int height) {
 
 	long imageSize = width * height;
 
-#pragma omp parallel num_threads(NUM_THREADS) shared(imageSize, fft1Real, fft2Real, fft1Imag, fft2Imag, outReal, outImag)
+#pragma omp parallel shared(imageSize, fft1Real, fft2Real, fft1Imag, fft2Imag, outReal, outImag)
 	{
-#pragma omp for schedule(dynamic) nowait
+#pragma omp for schedule(static) nowait
 		for (long i = 0; i < imageSize; i++)
 		{
 			outReal[i] = fft1Real[i] * fft2Real[i] - fft1Imag[i] * fft2Imag[i];
@@ -35,8 +94,87 @@ void ComplexMult(double* fft1Real, double* fft1Imag, double* fft2Real, double* f
 	}
 }
 
+#if defined(USE_OPENCV_CUDA)
+static bool TryPhaseCorrelationGpuCuda(double* fft1Real, double* fft1Imag, double* fft2Real, double* fft2Imag, int width, int height, double*& outReal)
+{
+	if (fft1Real == nullptr || fft1Imag == nullptr || fft2Real == nullptr || fft2Imag == nullptr || width <= 0 || height <= 0)
+		return false;
+
+	try {
+		cv::Mat spec1(height, width, CV_32FC2);
+		cv::Mat spec2(height, width, CV_32FC2);
+
+		for (int y = 0; y < height; y++) {
+			cv::Vec2f* row1 = spec1.ptr<cv::Vec2f>(y);
+			cv::Vec2f* row2 = spec2.ptr<cv::Vec2f>(y);
+			for (int x = 0; x < width; x++) {
+				const long idx = (long)y * (long)width + (long)x;
+				row1[x][0] = (float)fft1Real[idx];
+				row1[x][1] = (float)fft1Imag[idx];
+				row2[x][0] = (float)fft2Real[idx];
+				row2[x][1] = (float)fft2Imag[idx];
+			}
+		}
+
+		cv::cuda::GpuMat dSpec1, dSpec2, dCross, dIfft;
+		dSpec1.upload(spec1);
+		dSpec2.upload(spec2);
+
+		// Cross-power spectrum: F1 * conj(F2)
+		cv::cuda::mulSpectrums(dSpec1, dSpec2, dCross, 0, true);
+
+		std::vector<cv::cuda::GpuMat> channels;
+		cv::cuda::split(dCross, channels);
+		if (channels.size() != 2)
+			return false;
+
+		cv::cuda::GpuMat dMag;
+		cv::cuda::magnitude(channels[0], channels[1], dMag);
+		cv::cuda::max(dMag, cv::Scalar(1e-12f), dMag);
+		cv::cuda::divide(channels[0], dMag, channels[0]);
+		cv::cuda::divide(channels[1], dMag, channels[1]);
+		cv::cuda::merge(channels, dCross);
+
+		cv::cuda::dft(dCross, dIfft, cv::Size(width, height), cv::DFT_INVERSE | cv::DFT_SCALE);
+
+		cv::Mat ifftHost;
+		dIfft.download(ifftHost);
+
+		const long imageSize = (long)width * (long)height;
+		outReal = new double[imageSize];
+		for (int y = 0; y < height; y++) {
+			const cv::Vec2f* row = ifftHost.ptr<cv::Vec2f>(y);
+			for (int x = 0; x < width; x++) {
+				const long idx = (long)y * (long)width + (long)x;
+				outReal[idx] = (double)row[x][0];
+			}
+		}
+
+		return true;
+	}
+	catch (...) {
+		outReal = nullptr;
+		return false;
+	}
+}
+#endif
+
 double* PhaseCorrelation(double* fft1Real, double* fft1Imag, double* fft2Real, double* fft2Imag, int width, int height)
 {
+	// GPU backend can be enabled at runtime once compiled-in support is available.
+	// Current default build safely falls back to CPU.
+	if (GetPhaseCorrelationBackend() == PhaseCorrelationBackendGpu && !IsPhaseCorrelationGpuAvailable()) {
+		// Keep CPU fallback silent and deterministic for now.
+	}
+
+	#if defined(USE_OPENCV_CUDA)
+	if (GetPhaseCorrelationBackend() == PhaseCorrelationBackendGpu && IsPhaseCorrelationGpuAvailable()) {
+		double* gpuOut = nullptr;
+		if (TryPhaseCorrelationGpuCuda(fft1Real, fft1Imag, fft2Real, fft2Imag, width, height, gpuOut) && gpuOut != nullptr)
+			return gpuOut;
+	}
+	#endif
+
 	double* multReal, * multImag;
 	long imageSize = width * height;
 
@@ -47,9 +185,9 @@ double* PhaseCorrelation(double* fft1Real, double* fft1Imag, double* fft2Real, d
 	ComplexMult(fft1Real, fft1Imag, fft2Real, conjugated, multReal, multImag, width, height);
 
 	double norm;
-#pragma omp parallel num_threads(NUM_THREADS) shared(multReal, multImag, imageSize) private(norm)
+#pragma omp parallel shared(multReal, multImag, imageSize) private(norm)
 	{
-#pragma omp for schedule(dynamic) nowait
+#pragma omp for schedule(static) nowait
 		for (long i = 0; i < imageSize; i++)
 		{
 			norm = sqrt(pow(multReal[i], 2) + pow(multImag[i], 2));
@@ -83,9 +221,9 @@ float Correlation(BYTE* img1, BYTE* img2, int width, int height, int zoneWidth, 
 	double total = 0.0, totalSqr1 = 0.0, totalSqr2 = 0.0;
 	double mean1, mean2;
 
-#pragma omp parallel num_threads(NUM_THREADS) shared(zoneHeight,zoneWidth,start1H,start2H,start1W,start2W, width, img1, img2) private(newR1, newR2, newC1, newC2)
+#pragma omp parallel shared(zoneHeight,zoneWidth,start1H,start2H,start1W,start2W, width, img1, img2) private(newR1, newR2, newC1, newC2)
 	{
-#pragma omp for schedule(dynamic) reduction(+:total1,total2) nowait
+#pragma omp for schedule(static) reduction(+:total1,total2) nowait
 		for (int r = 0; r < zoneHeight; r++) {
 
 			newR1 = r + start1H;
@@ -103,9 +241,9 @@ float Correlation(BYTE* img1, BYTE* img2, int width, int height, int zoneWidth, 
 	mean1 = double(total1) / double(zoneHeight * zoneWidth);
 	mean2 = double(total2) / double(zoneHeight * zoneWidth);
 
-#pragma omp parallel num_threads(NUM_THREADS) shared(zoneHeight,zoneWidth,start1H,start2H,start1W,start2W,width,img1,img2,mean1,mean2) private(newR1, newR2, newC1, newC2)
+#pragma omp parallel shared(zoneHeight,zoneWidth,start1H,start2H,start1W,start2W,width,img1,img2,mean1,mean2) private(newR1, newR2, newC1, newC2)
 	{
-#pragma omp for schedule(dynamic) reduction(+:total,totalSqr1,totalSqr2) nowait
+#pragma omp for schedule(static) reduction(+:total,totalSqr1,totalSqr2) nowait
 		for (int r = 0; r < zoneHeight; r++) {
 
 			newR1 = r + start1H;
@@ -218,18 +356,22 @@ static float EdgeOverlapTargetBias(int width, int height, int dx, int dy)
 
 	bool horizontalNeighbor = absDx >= absDy;
 	int primaryOverlap = horizontalNeighbor ? overlapW : overlapH;
+	int primaryDim = horizontalNeighbor ? width : height;
 
-	const float targetOverlapPx = 300.0f;
+	// Use an image-size-aware overlap target; fixed pixel targets over-favor large overlaps on PCB scans.
+	float targetOverlapPx = 0.16f * (float)primaryDim;
+	if (targetOverlapPx < 80.0f) targetOverlapPx = 80.0f;
+	if (targetOverlapPx > 260.0f) targetOverlapPx = 260.0f;
 	float diff = (float)fabs((float)primaryOverlap - targetOverlapPx);
-	float bias = -0.28f * (diff / targetOverlapPx);
+	float bias = -0.45f * (diff / targetOverlapPx);
 
-	if (primaryOverlap > (int)(targetOverlapPx * 2.2f))
+	if (primaryOverlap > (int)(targetOverlapPx * 2.0f))
 		bias -= 0.30f;
-	if (primaryOverlap < 90)
+	if (primaryOverlap < (int)(targetOverlapPx * 0.55f))
 		bias -= 0.20f;
 
 	int dominantShift = horizontalNeighbor ? absDx : absDy;
-	int dominantDim = horizontalNeighbor ? width : height;
+	int dominantDim = primaryDim;
 	if (dominantShift < dominantDim / 10)
 		bias -= 0.25f;
 	if (dominantShift < dominantDim / 6)
@@ -311,6 +453,25 @@ static float EvaluateShiftNccSampledRotated(BYTE* img1, BYTE* img2, int width, i
 	return (float)(num / den);
 }
 
+static void BuildGradientImage(BYTE* src, int width, int height, std::vector<BYTE>& grad)
+{
+	grad.assign((size_t)width * (size_t)height, (BYTE)0);
+	if (src == nullptr || width < 3 || height < 3)
+		return;
+
+	for (int y = 1; y < height - 1; y++) {
+		int row = y * width;
+		for (int x = 1; x < width - 1; x++) {
+			int idx = row + x;
+			int gx = abs((int)src[idx + 1] - (int)src[idx - 1]);
+			int gy = abs((int)src[idx + width] - (int)src[idx - width]);
+			int g = gx + gy;
+			if (g > 255) g = 255;
+			grad[(size_t)idx] = (BYTE)g;
+		}
+	}
+}
+
 static void FallbackGlobalNccSearch(BYTE* img1, BYTE* img2, int width, int height, int& dx, int& dy, float& angleDeg, float baseScore)
 {
 	if (img1 == nullptr || img2 == nullptr || width <= 1 || height <= 1)
@@ -365,19 +526,32 @@ static void FallbackGlobalNccSearch(BYTE* img1, BYTE* img2, int width, int heigh
 	float bestAngle2 = 0.0f;
 	const int coarseStep2 = 4;
 	const float angleCandidates[] = { -4.0f, -2.0f, 0.0f, 2.0f, 4.0f };
+	auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(kRotatedFallbackBudgetMs);
+	std::atomic<bool> stopSearch(false);
 
-#pragma omp parallel num_threads(NUM_THREADS)
+#pragma omp parallel
 	{
 		int tBestDx2 = bestDx2;
 		int tBestDy2 = bestDy2;
 		float tBest2 = best2;
 		float tBestObjective2 = bestObjective2;
 		float tBestAngle2 = bestAngle2;
+		int tIter = 0;
 
-#pragma omp for collapse(3) schedule(dynamic) nowait
-		for (int ai = 0; ai < 5; ai++) {
-			for (int cy2 = -h2 / 2; cy2 <= h2 / 2; cy2 += coarseStep2) {
+		#pragma omp for schedule(static) nowait
+		for (int cy2 = -h2 / 2; cy2 <= h2 / 2; cy2 += coarseStep2) {
+			if (stopSearch.load())
+				continue;
+			for (int ai = 0; ai < 5; ai++) {
+				if (stopSearch.load())
+					break;
 				for (int cx2 = -w2 / 2; cx2 <= w2 / 2; cx2 += coarseStep2) {
+					if (stopSearch.load())
+						break;
+					if ((++tIter & 63) == 0 && std::chrono::steady_clock::now() >= deadline) {
+						stopSearch.store(true);
+						break;
+					}
 					float candAngle = angleCandidates[ai];
 					float s = (candAngle == 0.0f)
 						? EvaluateShiftNccSampled(a2.data(), b2.data(), w2, h2, cx2, cy2, 2)
@@ -417,16 +591,25 @@ static void FallbackGlobalNccSearch(BYTE* img1, BYTE* img2, int width, int heigh
 	float bestObjective = baseScore + ShiftSelectionBias(width, height, dx, dy);
 	float bestAngle = bestAngle2;
 
-#pragma omp parallel num_threads(NUM_THREADS)
+#pragma omp parallel
 	{
 		int tBestDx = bestDx;
 		int tBestDy = bestDy;
 		float tBest = best;
 		float tBestObjective = bestObjective;
+		int tIter = 0;
 
-#pragma omp for collapse(2) schedule(dynamic) nowait
+		#pragma omp for schedule(static) nowait
 		for (int cy = candidateDy - 16; cy <= candidateDy + 16; cy++) {
+			if (stopSearch.load())
+				continue;
 			for (int cx = candidateDx - 16; cx <= candidateDx + 16; cx++) {
+				if (stopSearch.load())
+					break;
+				if ((++tIter & 63) == 0 && std::chrono::steady_clock::now() >= deadline) {
+					stopSearch.store(true);
+					break;
+				}
 				float s = (bestAngle2 == 0.0f)
 					? EvaluateShiftNccSampled(img1, img2, width, height, cx, cy, 8)
 					: EvaluateShiftNccSampledRotated(img1, img2, width, height, cx, cy, bestAngle2, 8);
@@ -494,14 +677,14 @@ static void FallbackLocalNccSearch(BYTE* img1, BYTE* img2, int width, int height
 	int bestDx = dx;
 	int bestDy = dy;
 
-#pragma omp parallel num_threads(NUM_THREADS)
+#pragma omp parallel
 	{
 		float tBest = best;
 		float tBestObjective = bestObjective;
 		int tBestDx = bestDx;
 		int tBestDy = bestDy;
 
-#pragma omp for collapse(2) schedule(dynamic) nowait
+		#pragma omp for schedule(static) nowait
 		for (int cy = minDy; cy <= maxDy; cy += coarseStep) {
 			for (int cx = minDx; cx <= maxDx; cx += coarseStep) {
 				float s = EvaluateShiftNccSampled(img1, img2, width, height, cx, cy, 4);
@@ -536,14 +719,14 @@ static void FallbackLocalNccSearch(BYTE* img1, BYTE* img2, int width, int height
 	if (refMinDy < -height + 1) refMinDy = -height + 1;
 	if (refMaxDy > height - 1) refMaxDy = height - 1;
 
-#pragma omp parallel num_threads(NUM_THREADS)
+#pragma omp parallel
 	{
 		float tBest = best;
 		float tBestObjective = bestObjective;
 		int tBestDx = bestDx;
 		int tBestDy = bestDy;
 
-#pragma omp for collapse(2) schedule(dynamic) nowait
+		#pragma omp for schedule(static) nowait
 		for (int cy = refMinDy; cy <= refMaxDy; cy++) {
 			for (int cx = refMinDx; cx <= refMaxDx; cx++) {
 				float s = EvaluateShiftNccSampled(img1, img2, width, height, cx, cy, 2);
@@ -574,6 +757,327 @@ static void FallbackLocalNccSearch(BYTE* img1, BYTE* img2, int width, int height
 	}
 }
 
+static void FallbackVerticalAnchoredSearch(BYTE* img1, BYTE* img2, int width, int height, int& dx, int& dy, float& angleDeg, float baseScore, float* bestCandidateScore, float* bestCandidateObjective, bool* acceptedCandidate)
+{
+	if (bestCandidateScore != nullptr)
+		*bestCandidateScore = baseScore;
+	if (bestCandidateObjective != nullptr)
+		*bestCandidateObjective = baseScore + ShiftSelectionBias(width, height, dx, dy);
+	if (acceptedCandidate != nullptr)
+		*acceptedCandidate = false;
+
+	if (img1 == nullptr || img2 == nullptr || width <= 1 || height <= 1)
+		return;
+
+	std::vector<BYTE> grad1;
+	std::vector<BYTE> grad2;
+	BuildGradientImage(img1, width, height, grad1);
+	BuildGradientImage(img2, width, height, grad2);
+
+	auto EvaluateCompositeScore = [&](int sdx, int sdy, float sang) -> float {
+		float sIntensity = (sang == 0.0f)
+			? EvaluateShiftNccSampled(img1, img2, width, height, sdx, sdy, 2)
+			: EvaluateShiftNccSampledRotated(img1, img2, width, height, sdx, sdy, sang, 2);
+
+		float sGradient = (sang == 0.0f)
+			? EvaluateShiftNccSampled(grad1.data(), grad2.data(), width, height, sdx, sdy, 3)
+			: EvaluateShiftNccSampledRotated(grad1.data(), grad2.data(), width, height, sdx, sdy, sang, 3);
+
+		bool intensityValid = sIntensity > -1.5f;
+		bool gradientValid = sGradient > -1.5f;
+		if (intensityValid && gradientValid)
+			return 0.30f * sIntensity + 0.70f * sGradient;
+		if (gradientValid)
+			return sGradient;
+		if (intensityValid)
+			return sIntensity;
+		return -2.0f;
+	};
+
+	const int overlapPxCandidates[] = { 140, 180, 220, 260, 300, 340, 380, 460, 560 };
+	const float overlapRatioCandidates[] = { 0.05f, 0.07f, 0.09f, 0.12f, 0.16f, 0.20f, 0.24f };
+	const float angleCandidates[] = { -2.0f, 0.0f, 2.0f };
+	int dxJitter = width / 220;
+	if (dxJitter < 2) dxJitter = 2;
+	if (dxJitter > 16) dxJitter = 16;
+
+	std::vector<xy> candidates;
+	candidates.reserve(120);
+	for (int oi = 0; oi < 9; oi++) {
+		int overlapPx = overlapPxCandidates[oi];
+		int shiftY = height - overlapPx;
+		if (shiftY >= 1 && shiftY < height) {
+			for (int j = -1; j <= 1; j++) {
+				candidates.push_back({ j * dxJitter, shiftY });
+				candidates.push_back({ j * dxJitter, -shiftY });
+			}
+		}
+	}
+	for (int oi = 0; oi < 7; oi++) {
+		float overlap = overlapRatioCandidates[oi];
+		int shiftY = height - (int)(overlap * (float)height);
+		if (shiftY >= 1 && shiftY < height) {
+			for (int j = -1; j <= 1; j++) {
+				candidates.push_back({ j * dxJitter, shiftY });
+				candidates.push_back({ j * dxJitter, -shiftY });
+			}
+		}
+	}
+	auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(kRotatedFallbackBudgetMs);
+	std::atomic<bool> stopSearch(false);
+
+	int bestDx = dx;
+	int bestDy = dy;
+	float bestAng = angleDeg;
+	float bestScore = EvaluateCompositeScore(dx, dy, angleDeg);
+	if (bestScore <= -1.5f)
+		bestScore = baseScore;
+	float bestObjective = baseScore + ShiftSelectionBias(width, height, dx, dy) + EdgeOverlapTargetBias(width, height, dx, dy);
+
+	auto IsBetterCandidate = [](float objA, float scoreA, int dxA, int dyA, float angA,
+		float objB, float scoreB, int dxB, int dyB, float angB) -> bool {
+		if (objA > objB) return true;
+		if (objA < objB) return false;
+		if (scoreA > scoreB) return true;
+		if (scoreA < scoreB) return false;
+		float absAngA = (float)fabs(angA);
+		float absAngB = (float)fabs(angB);
+		if (absAngA < absAngB) return true;
+		if (absAngA > absAngB) return false;
+		int magA = abs(dxA) + abs(dyA);
+		int magB = abs(dxB) + abs(dyB);
+		if (magA < magB) return true;
+		if (magA > magB) return false;
+		if (dyA < dyB) return true;
+		if (dyA > dyB) return false;
+		return dxA < dxB;
+	};
+
+	#pragma omp parallel
+	{
+		int tBestDx = bestDx;
+		int tBestDy = bestDy;
+		float tBestAng = bestAng;
+		float tBestScore = bestScore;
+		float tBestObjective = bestObjective;
+		int tIter = 0;
+
+		#pragma omp for schedule(static) nowait
+		for (int ci = 0; ci < (int)candidates.size(); ci++) {
+			if (stopSearch.load())
+				continue;
+			for (int ai = 0; ai < 3; ai++) {
+				if (stopSearch.load())
+					break;
+				int dxCand = candidates[(size_t)ci].x;
+				int dyCand = candidates[(size_t)ci].y;
+				if ((++tIter & 31) == 0 && std::chrono::steady_clock::now() >= deadline) {
+					stopSearch.store(true);
+					break;
+				}
+					float candAng = angleCandidates[ai];
+					float s = EvaluateCompositeScore(dxCand, dyCand, candAng);
+					// Strongly favor vertical movement here; horizontal motion is treated as a fallback-only side effect.
+					float verticalBias = 0.30f * ((float)abs(dyCand) / (float)(height > 0 ? height : 1));
+					float horizontalPenalty = 0.45f * ((float)abs(dxCand) / (float)(width > 0 ? width : 1));
+					float objective = s + verticalBias - horizontalPenalty - (float)fabs(candAng) * 0.012f;
+					if (IsBetterCandidate(objective, s, dxCand, dyCand, candAng, tBestObjective, tBestScore, tBestDx, tBestDy, tBestAng)) {
+						tBestObjective = objective;
+						tBestScore = s;
+						tBestDx = dxCand;
+						tBestDy = dyCand;
+						tBestAng = candAng;
+					}
+				}
+			}
+
+		#pragma omp critical
+		{
+			if (IsBetterCandidate(tBestObjective, tBestScore, tBestDx, tBestDy, tBestAng, bestObjective, bestScore, bestDx, bestDy, bestAng)) {
+				bestObjective = tBestObjective;
+				bestScore = tBestScore;
+				bestDx = tBestDx;
+				bestDy = tBestDy;
+				bestAng = tBestAng;
+			}
+		}
+	}
+
+	const bool accept = (bestObjective > baseScore + 0.005f) && (bestScore > -1.0f);
+	if (accept) {
+		dx = bestDx;
+		dy = bestDy;
+		angleDeg = bestAng;
+	}
+
+	if (bestCandidateScore != nullptr)
+		*bestCandidateScore = bestScore;
+	if (bestCandidateObjective != nullptr)
+		*bestCandidateObjective = bestObjective;
+	if (acceptedCandidate != nullptr)
+		*acceptedCandidate = accept;
+}
+
+static void FallbackHorizontalAnchoredSearch(BYTE* img1, BYTE* img2, int width, int height, int& dx, int& dy, float& angleDeg, float baseScore, float* bestCandidateScore, float* bestCandidateObjective, bool* acceptedCandidate)
+{
+	if (bestCandidateScore != nullptr)
+		*bestCandidateScore = baseScore;
+	if (bestCandidateObjective != nullptr)
+		*bestCandidateObjective = baseScore + ShiftSelectionBias(width, height, dx, dy);
+	if (acceptedCandidate != nullptr)
+		*acceptedCandidate = false;
+
+	if (img1 == nullptr || img2 == nullptr || width <= 1 || height <= 1)
+		return;
+
+	std::vector<BYTE> grad1;
+	std::vector<BYTE> grad2;
+	BuildGradientImage(img1, width, height, grad1);
+	BuildGradientImage(img2, width, height, grad2);
+
+	auto EvaluateCompositeScore = [&](int sdx, int sdy, float sang) -> float {
+		float sIntensity = (sang == 0.0f)
+			? EvaluateShiftNccSampled(img1, img2, width, height, sdx, sdy, 2)
+			: EvaluateShiftNccSampledRotated(img1, img2, width, height, sdx, sdy, sang, 2);
+
+		float sGradient = (sang == 0.0f)
+			? EvaluateShiftNccSampled(grad1.data(), grad2.data(), width, height, sdx, sdy, 3)
+			: EvaluateShiftNccSampledRotated(grad1.data(), grad2.data(), width, height, sdx, sdy, sang, 3);
+
+		bool intensityValid = sIntensity > -1.5f;
+		bool gradientValid = sGradient > -1.5f;
+		if (intensityValid && gradientValid)
+			return 0.30f * sIntensity + 0.70f * sGradient;
+		if (gradientValid)
+			return sGradient;
+		if (intensityValid)
+			return sIntensity;
+		return -2.0f;
+	};
+
+	const int overlapPxCandidates[] = { 140, 180, 220, 260, 300, 340, 380, 460, 560 };
+	const float overlapRatioCandidates[] = { 0.05f, 0.07f, 0.09f, 0.12f, 0.16f, 0.20f, 0.24f };
+	const float angleCandidates[] = { -2.0f, 0.0f, 2.0f };
+	int dyJitter = height / 220;
+	if (dyJitter < 2) dyJitter = 2;
+	if (dyJitter > 16) dyJitter = 16;
+
+	std::vector<xy> candidates;
+	candidates.reserve(120);
+	for (int oi = 0; oi < 9; oi++) {
+		int overlapPx = overlapPxCandidates[oi];
+		int shiftX = width - overlapPx;
+		if (shiftX >= 1 && shiftX < width) {
+			for (int j = -1; j <= 1; j++) {
+				candidates.push_back({ shiftX, j * dyJitter });
+				candidates.push_back({ -shiftX, j * dyJitter });
+			}
+		}
+	}
+	for (int oi = 0; oi < 7; oi++) {
+		float overlap = overlapRatioCandidates[oi];
+		int shiftX = width - (int)(overlap * (float)width);
+		if (shiftX >= 1 && shiftX < width) {
+			for (int j = -1; j <= 1; j++) {
+				candidates.push_back({ shiftX, j * dyJitter });
+				candidates.push_back({ -shiftX, j * dyJitter });
+			}
+		}
+	}
+	auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(kRotatedFallbackBudgetMs);
+	std::atomic<bool> stopSearch(false);
+
+	int bestDx = dx;
+	int bestDy = dy;
+	float bestAng = angleDeg;
+	float bestScore = EvaluateCompositeScore(dx, dy, angleDeg);
+	if (bestScore <= -1.5f)
+		bestScore = baseScore;
+	float bestObjective = baseScore + ShiftSelectionBias(width, height, dx, dy) + EdgeOverlapTargetBias(width, height, dx, dy);
+
+	auto IsBetterCandidate = [](float objA, float scoreA, int dxA, int dyA, float angA,
+		float objB, float scoreB, int dxB, int dyB, float angB) -> bool {
+		if (objA > objB) return true;
+		if (objA < objB) return false;
+		if (scoreA > scoreB) return true;
+		if (scoreA < scoreB) return false;
+		float absAngA = (float)fabs(angA);
+		float absAngB = (float)fabs(angB);
+		if (absAngA < absAngB) return true;
+		if (absAngA > absAngB) return false;
+		int magA = abs(dxA) + abs(dyA);
+		int magB = abs(dxB) + abs(dyB);
+		if (magA < magB) return true;
+		if (magA > magB) return false;
+		if (dxA < dxB) return true;
+		if (dxA > dxB) return false;
+		return dyA < dyB;
+	};
+
+	#pragma omp parallel
+	{
+		int tBestDx = bestDx;
+		int tBestDy = bestDy;
+		float tBestAng = bestAng;
+		float tBestScore = bestScore;
+		float tBestObjective = bestObjective;
+		int tIter = 0;
+
+		#pragma omp for schedule(static) nowait
+		for (int ci = 0; ci < (int)candidates.size(); ci++) {
+			if (stopSearch.load())
+				continue;
+			for (int ai = 0; ai < 3; ai++) {
+				if (stopSearch.load())
+					break;
+				int dxCand = candidates[(size_t)ci].x;
+				int dyCand = candidates[(size_t)ci].y;
+				if ((++tIter & 31) == 0 && std::chrono::steady_clock::now() >= deadline) {
+					stopSearch.store(true);
+					break;
+				}
+					float candAng = angleCandidates[ai];
+					float s = EvaluateCompositeScore(dxCand, dyCand, candAng);
+					float horizontalBias = 0.30f * ((float)abs(dxCand) / (float)(width > 0 ? width : 1));
+					float verticalPenalty = 0.45f * ((float)abs(dyCand) / (float)(height > 0 ? height : 1));
+					float objective = s + horizontalBias - verticalPenalty - (float)fabs(candAng) * 0.012f;
+					if (IsBetterCandidate(objective, s, dxCand, dyCand, candAng, tBestObjective, tBestScore, tBestDx, tBestDy, tBestAng)) {
+						tBestObjective = objective;
+						tBestScore = s;
+						tBestDx = dxCand;
+						tBestDy = dyCand;
+						tBestAng = candAng;
+					}
+				}
+			}
+
+		#pragma omp critical
+		{
+			if (IsBetterCandidate(tBestObjective, tBestScore, tBestDx, tBestDy, tBestAng, bestObjective, bestScore, bestDx, bestDy, bestAng)) {
+				bestObjective = tBestObjective;
+				bestScore = tBestScore;
+				bestDx = tBestDx;
+				bestDy = tBestDy;
+				bestAng = tBestAng;
+			}
+		}
+	}
+
+	const bool accept = (bestObjective > baseScore + 0.005f) && (bestScore > -1.0f);
+	if (accept) {
+		dx = bestDx;
+		dy = bestDy;
+		angleDeg = bestAng;
+	}
+
+	if (bestCandidateScore != nullptr)
+		*bestCandidateScore = bestScore;
+	if (bestCandidateObjective != nullptr)
+		*bestCandidateObjective = bestObjective;
+	if (acceptedCandidate != nullptr)
+		*acceptedCandidate = accept;
+}
+
 static void FallbackEdgeAnchoredSearch(BYTE* img1, BYTE* img2, int width, int height, int& dx, int& dy, float& angleDeg, float baseScore, float* bestCandidateScore, float* bestCandidateObjective, bool* acceptedCandidate)
 {
 	if (bestCandidateScore != nullptr)
@@ -586,14 +1090,41 @@ static void FallbackEdgeAnchoredSearch(BYTE* img1, BYTE* img2, int width, int he
 	if (img1 == nullptr || img2 == nullptr || width <= 1 || height <= 1)
 		return;
 
+	std::vector<BYTE> grad1;
+	std::vector<BYTE> grad2;
+	BuildGradientImage(img1, width, height, grad1);
+	BuildGradientImage(img2, width, height, grad2);
+
+	auto EvaluateCompositeScore = [&](int sdx, int sdy, float sang) -> float {
+		float sIntensity = (sang == 0.0f)
+			? EvaluateShiftNccSampled(img1, img2, width, height, sdx, sdy, 2)
+			: EvaluateShiftNccSampledRotated(img1, img2, width, height, sdx, sdy, sang, 2);
+
+		float sGradient = (sang == 0.0f)
+			? EvaluateShiftNccSampled(grad1.data(), grad2.data(), width, height, sdx, sdy, 3)
+			: EvaluateShiftNccSampledRotated(grad1.data(), grad2.data(), width, height, sdx, sdy, sang, 3);
+
+		bool intensityValid = sIntensity > -1.5f;
+		bool gradientValid = sGradient > -1.5f;
+		if (intensityValid && gradientValid)
+			return 0.35f * sIntensity + 0.65f * sGradient;
+		if (gradientValid)
+			return sGradient;
+		if (intensityValid)
+			return sIntensity;
+		return -2.0f;
+	};
+
 	const int overlapPxCandidates[] = { 140, 180, 220, 260, 300, 340, 380, 460, 560 };
 	const float overlapRatioCandidates[] = { 0.05f, 0.07f, 0.09f, 0.12f, 0.16f, 0.20f, 0.24f };
-	const float angleCandidates[] = { -6.0f, -4.0f, -2.0f, 0.0f, 2.0f, 4.0f, 6.0f };
+	const float angleCandidates[] = { -5.0f, -3.0f, -1.0f, 0.0f, 1.0f, 3.0f, 5.0f };
 
 	int bestDx = dx;
 	int bestDy = dy;
 	float bestAng = angleDeg;
-	float bestScore = baseScore;
+	float bestScore = EvaluateCompositeScore(dx, dy, angleDeg);
+	if (bestScore <= -1.5f)
+		bestScore = baseScore;
 	float bestObjective = baseScore + ShiftSelectionBias(width, height, dx, dy) + EdgeOverlapTargetBias(width, height, dx, dy);
 	const float baseObjective = bestObjective;
 
@@ -645,6 +1176,8 @@ static void FallbackEdgeAnchoredSearch(BYTE* img1, BYTE* img2, int width, int he
 			}
 		}
 	}
+	auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(kRotatedFallbackBudgetMs);
+	std::atomic<bool> stopSearch(false);
 
 	auto IsBetterCandidate = [](float objA, float scoreA, int dxA, int dyA, float angA,
 		float objB, float scoreB, int dxB, int dyB, float angB) -> bool {
@@ -665,24 +1198,31 @@ static void FallbackEdgeAnchoredSearch(BYTE* img1, BYTE* img2, int width, int he
 		return dxA < dxB;
 	};
 
-#pragma omp parallel num_threads(NUM_THREADS)
+#pragma omp parallel
 	{
 		int tBestDx = bestDx;
 		int tBestDy = bestDy;
 		float tBestAng = bestAng;
 		float tBestScore = bestScore;
 		float tBestObjective = bestObjective;
+		int tIter = 0;
 
-#pragma omp for collapse(2) schedule(dynamic) nowait
+#pragma omp for schedule(static) nowait
 		for (int ci = 0; ci < (int)candidates.size(); ci++) {
+			if (stopSearch.load())
+				continue;
 			for (int ai = 0; ai < 7; ai++) {
+				if (stopSearch.load())
+					break;
 				int candDx = candidates[(size_t)ci].x;
 				int candDy = candidates[(size_t)ci].y;
+				if ((++tIter & 31) == 0 && std::chrono::steady_clock::now() >= deadline) {
+					stopSearch.store(true);
+					break;
+				}
 				float candAng = angleCandidates[ai];
-				float s = (candAng == 0.0f)
-					? EvaluateShiftNccSampled(img1, img2, width, height, candDx, candDy, 2)
-					: EvaluateShiftNccSampledRotated(img1, img2, width, height, candDx, candDy, candAng, 2);
-				float objective = s + ShiftSelectionBias(width, height, candDx, candDy) + EdgeOverlapTargetBias(width, height, candDx, candDy) - (float)fabs(candAng) * 0.005f + 0.06f;
+				float s = EvaluateCompositeScore(candDx, candDy, candAng);
+				float objective = s + ShiftSelectionBias(width, height, candDx, candDy) + EdgeOverlapTargetBias(width, height, candDx, candDy) - (float)fabs(candAng) * 0.012f + 0.06f;
 				if (IsBetterCandidate(objective, s, candDx, candDy, candAng, tBestObjective, tBestScore, tBestDx, tBestDy, tBestAng)) {
 					tBestObjective = objective;
 					tBestScore = s;
@@ -705,13 +1245,36 @@ static void FallbackEdgeAnchoredSearch(BYTE* img1, BYTE* img2, int width, int he
 		}
 	}
 
+   // Hard overlap constraint: prefer primary overlaps in a reasonable range unless candidate is significantly better
+	int primaryDimCurrent = (abs(dx) >= abs(dy)) ? width : height;
+	int MIN_OVERLAP_PX = primaryDimCurrent / 18;
+	if (MIN_OVERLAP_PX < 40) MIN_OVERLAP_PX = 40;
+	int MAX_OVERLAP_PX = (int)(0.55f * (float)primaryDimCurrent);
+	if (MAX_OVERLAP_PX > primaryDimCurrent - 10) MAX_OVERLAP_PX = primaryDimCurrent - 10;
+	const float REQUIRED_ADVANTAGE = 0.10f; // candidate must beat base by this margin if overlap out of range
 	const bool veryLowConfidence = baseScore < 0.35f;
 	bool accept = false;
 	if (veryLowConfidence) {
-		accept = (bestObjective > baseObjective + 0.005f) && (bestScore > baseScore - 0.02f);
+		// In very low-confidence regimes, rely on geometry/objective bias to escape phase-correlation local minima.
+		accept = (bestObjective > baseObjective + 0.005f);
 	}
 	else {
 		accept = (bestObjective > baseObjective + 0.02f) && (bestScore > 0.26f);
+	}
+
+	// compute primary overlap of chosen candidate
+	int absDxBest = abs(bestDx);
+	int absDyBest = abs(bestDy);
+	bool horizontalNeighborBest = absDxBest >= absDyBest;
+	int primaryOverlapBest = horizontalNeighborBest ? (width - absDxBest) : (height - absDyBest);
+    // if primary overlap is outside acceptable range, require significant advantage
+	if (accept && GetHardOverlapCheck()) {
+		if (primaryOverlapBest < MIN_OVERLAP_PX || primaryOverlapBest > MAX_OVERLAP_PX) {
+			if (!(bestObjective > baseObjective + REQUIRED_ADVANTAGE)) {
+				// reject candidate despite earlier acceptance
+				accept = false;
+			}
+		}
 	}
 
 	if (accept) {
@@ -742,6 +1305,103 @@ float PhaseShiftConfidence(BYTE* img1, BYTE* img2, int width, int height, xy* po
 		dy -= height;
 
 	return EvaluateShiftNccSampled(img1, img2, width, height, dx, dy, 2);
+}
+
+static void RefineShiftRotationLocal(BYTE* img1, BYTE* img2, int width, int height, int& dx, int& dy, float& angleDeg)
+{
+	if (img1 == nullptr || img2 == nullptr || width <= 1 || height <= 1)
+		return;
+
+	std::vector<BYTE> grad1;
+	std::vector<BYTE> grad2;
+	BuildGradientImage(img1, width, height, grad1);
+	BuildGradientImage(img2, width, height, grad2);
+
+	auto EvaluateCompositeScore = [&](int sdx, int sdy, float sang) -> float {
+		float sIntensity = (sang == 0.0f)
+			? EvaluateShiftNccSampled(img1, img2, width, height, sdx, sdy, 2)
+			: EvaluateShiftNccSampledRotated(img1, img2, width, height, sdx, sdy, sang, 2);
+		float sGradient = (sang == 0.0f)
+			? EvaluateShiftNccSampled(grad1.data(), grad2.data(), width, height, sdx, sdy, 3)
+			: EvaluateShiftNccSampledRotated(grad1.data(), grad2.data(), width, height, sdx, sdy, sang, 3);
+
+		bool intensityValid = sIntensity > -1.5f;
+		bool gradientValid = sGradient > -1.5f;
+		if (intensityValid && gradientValid)
+			return 0.35f * sIntensity + 0.65f * sGradient;
+		if (gradientValid)
+			return sGradient;
+		if (intensityValid)
+			return sIntensity;
+		return -2.0f;
+	};
+
+	auto IsBetterCandidate = [](float objA, float scoreA, int dxA, int dyA, float angA,
+		float objB, float scoreB, int dxB, int dyB, float angB) -> bool {
+		if (objA > objB) return true;
+		if (objA < objB) return false;
+		if (scoreA > scoreB) return true;
+		if (scoreA < scoreB) return false;
+		float absAngA = (float)fabs(angA);
+		float absAngB = (float)fabs(angB);
+		if (absAngA < absAngB) return true;
+		if (absAngA > absAngB) return false;
+		int magA = abs(dxA) + abs(dyA);
+		int magB = abs(dxB) + abs(dyB);
+		if (magA < magB) return true;
+		if (magA > magB) return false;
+		if (dyA < dyB) return true;
+		if (dyA > dyB) return false;
+		return dxA < dxB;
+	};
+
+	int bestDx = dx;
+	int bestDy = dy;
+	float bestAng = angleDeg;
+	float bestScore = EvaluateCompositeScore(bestDx, bestDy, bestAng);
+	float bestObjective = bestScore + ShiftSelectionBias(width, height, bestDx, bestDy) + EdgeOverlapTargetBias(width, height, bestDx, bestDy) - (float)fabs(bestAng) * 0.01f;
+
+	const int dxRange[2] = { 6, 3 };
+	const int dyRange[2] = { 6, 3 };
+	const float angRange[2] = { 1.0f, 0.45f };
+	const float angStep[2] = { 0.25f, 0.10f };
+	auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(700);
+
+	for (int pass = 0; pass < 2; pass++) {
+		int centerDx = bestDx;
+		int centerDy = bestDy;
+		float centerAng = bestAng;
+		for (int cy = centerDy - dyRange[pass]; cy <= centerDy + dyRange[pass]; cy++) {
+			if (std::chrono::steady_clock::now() >= deadline)
+				return;
+			if (cy < -height + 1 || cy > height - 1)
+				continue;
+			for (int cx = centerDx - dxRange[pass]; cx <= centerDx + dxRange[pass]; cx++) {
+				if (cx < -width + 1 || cx > width - 1)
+					continue;
+				for (float ca = centerAng - angRange[pass]; ca <= centerAng + angRange[pass] + 1e-6f; ca += angStep[pass]) {
+					if (std::chrono::steady_clock::now() >= deadline)
+						return;
+					float candAng = ca;
+					if (candAng > 6.0f) candAng = 6.0f;
+					if (candAng < -6.0f) candAng = -6.0f;
+					float s = EvaluateCompositeScore(cx, cy, candAng);
+					float objective = s + ShiftSelectionBias(width, height, cx, cy) + EdgeOverlapTargetBias(width, height, cx, cy) - (float)fabs(candAng) * 0.01f;
+					if (IsBetterCandidate(objective, s, cx, cy, candAng, bestObjective, bestScore, bestDx, bestDy, bestAng)) {
+						bestObjective = objective;
+						bestScore = s;
+						bestDx = cx;
+						bestDy = cy;
+						bestAng = candAng;
+					}
+				}
+			}
+		}
+	}
+
+	dx = bestDx;
+	dy = bestDy;
+	angleDeg = bestAng;
 }
 
 //float Correlation(BYTE* img1, BYTE* img2, int width, int height, int zoneWidth, int zoneHeight, int start1H, int start1W, int start2H, int start2W, BYTE v) {
@@ -797,17 +1457,20 @@ float PhaseShiftConfidence(BYTE* img1, BYTE* img2, int width, int height, xy* po
 	* 			*
 	2 ********* 3
 */
-int ZoneDetection(BYTE* img1, BYTE* img2, int width, int height, xy* vec, xy* pocDot, xy* signedShift, float* rotationDeg, float* fallbackScore, float* fallbackObjective, bool* fallbackApplied) {
+int ZoneDetection(BYTE* img1, BYTE* img2, int width, int height, xy* vec, xy* pocDot, xy* signedShift, float* rotationDeg, float* fallbackScore, float* fallbackObjective, bool* fallbackApplied, double* fallbackLocalMs, double* fallbackGlobalMs, double* fallbackEdgeMs) {
 	// Use wrapped phase-correlation displacement directly instead of corner-zone heuristic.
 	(void)img1;
 	(void)img2;
 
-	if (fallbackScore != nullptr)
+    if (fallbackScore != nullptr)
 		*fallbackScore = -1.0f;
 	if (fallbackObjective != nullptr)
 		*fallbackObjective = -1.0f;
 	if (fallbackApplied != nullptr)
 		*fallbackApplied = false;
+	if (fallbackLocalMs != nullptr) *fallbackLocalMs = -1.0;
+	if (fallbackGlobalMs != nullptr) *fallbackGlobalMs = -1.0;
+	if (fallbackEdgeMs != nullptr) *fallbackEdgeMs = -1.0;
 
 	int dx = pocDot->x;
 	int dy = pocDot->y;
@@ -819,29 +1482,156 @@ int ZoneDetection(BYTE* img1, BYTE* img2, int width, int height, xy* vec, xy* po
 		dy -= height;
 
 	float pocScore = EvaluateShiftNccSampled(img1, img2, width, height, dx, dy, 2);
-	if (pocScore < 0.70f) {
-		FallbackLocalNccSearch(img1, img2, width, height, dx, dy, pocScore);
-		float localScore = EvaluateShiftNccSampled(img1, img2, width, height, dx, dy, 2);
-		if (localScore < 0.55f) {
-			FallbackGlobalNccSearch(img1, img2, width, height, dx, dy, rot, localScore);
-		}
-	}
 
 	float currentScore = (rot == 0.0f)
 		? EvaluateShiftNccSampled(img1, img2, width, height, dx, dy, 2)
 		: EvaluateShiftNccSampledRotated(img1, img2, width, height, dx, dy, rot, 2);
-	bool shiftTooSmall = (abs(dx) < (width / 14)) && (abs(dy) < (height / 14));
-	if (currentScore < 0.62f || shiftTooSmall) {
+
+	// Try edge-anchored search first on low-confidence cases to avoid getting trapped by high-overlap local maxima.
+	bool edgeAccepted = false;
+	if (pocScore < 0.70f) {
 		float edgeScore = currentScore;
 		float edgeObjective = currentScore + ShiftSelectionBias(width, height, dx, dy) + EdgeOverlapTargetBias(width, height, dx, dy);
-		bool edgeAccepted = false;
+		auto tedge0 = std::chrono::high_resolution_clock::now();
 		FallbackEdgeAnchoredSearch(img1, img2, width, height, dx, dy, rot, currentScore, &edgeScore, &edgeObjective, &edgeAccepted);
+		auto tedge1 = std::chrono::high_resolution_clock::now();
+		if (fallbackEdgeMs != nullptr) {
+			*fallbackEdgeMs = std::chrono::duration_cast<std::chrono::duration<double, std::milli>>(tedge1 - tedge0).count();
+		}
 		if (fallbackScore != nullptr)
 			*fallbackScore = edgeScore;
 		if (fallbackObjective != nullptr)
 			*fallbackObjective = edgeObjective;
 		if (fallbackApplied != nullptr)
 			*fallbackApplied = edgeAccepted;
+
+		if (edgeAccepted) {
+			currentScore = (rot == 0.0f)
+				? EvaluateShiftNccSampled(img1, img2, width, height, dx, dy, 2)
+				: EvaluateShiftNccSampledRotated(img1, img2, width, height, dx, dy, rot, 2);
+		}
+	}
+
+	if (pocScore < 0.68f) {
+		int vertDx = dx;
+		int vertDy = dy;
+		float vertRot = rot;
+		float vertScore = currentScore;
+		float vertObjective = currentScore + ShiftSelectionBias(width, height, dx, dy) + EdgeOverlapTargetBias(width, height, dx, dy);
+		bool vertAccepted = false;
+		auto tvert0 = std::chrono::high_resolution_clock::now();
+		FallbackVerticalAnchoredSearch(img1, img2, width, height, vertDx, vertDy, vertRot, currentScore, &vertScore, &vertObjective, &vertAccepted);
+		auto tvert1 = std::chrono::high_resolution_clock::now();
+
+		int horizDx = dx;
+		int horizDy = dy;
+		float horizRot = rot;
+		float horizScore = currentScore;
+		float horizObjective = currentScore + ShiftSelectionBias(width, height, dx, dy) + EdgeOverlapTargetBias(width, height, dx, dy);
+		bool horizAccepted = false;
+		auto thoriz0 = std::chrono::high_resolution_clock::now();
+		FallbackHorizontalAnchoredSearch(img1, img2, width, height, horizDx, horizDy, horizRot, currentScore, &horizScore, &horizObjective, &horizAccepted);
+		auto thoriz1 = std::chrono::high_resolution_clock::now();
+
+		if (fallbackEdgeMs != nullptr && *fallbackEdgeMs < 0.0) {
+			*fallbackEdgeMs = std::chrono::duration_cast<std::chrono::duration<double, std::milli>>(tvert1 - tvert0).count() +
+				std::chrono::duration_cast<std::chrono::duration<double, std::milli>>(thoriz1 - thoriz0).count();
+		}
+
+		bool chooseVertical = false;
+		if (vertAccepted && horizAccepted) {
+			chooseVertical = (vertObjective > horizObjective) || (vertObjective == horizObjective && vertScore >= horizScore);
+		}
+		else if (vertAccepted) {
+			chooseVertical = true;
+		}
+		else if (!horizAccepted) {
+			chooseVertical = true;
+		}
+
+		if (chooseVertical && vertAccepted) {
+			dx = vertDx;
+			dy = vertDy;
+			rot = vertRot;
+			currentScore = (rot == 0.0f)
+				? EvaluateShiftNccSampled(img1, img2, width, height, dx, dy, 2)
+				: EvaluateShiftNccSampledRotated(img1, img2, width, height, dx, dy, rot, 2);
+			if (fallbackScore != nullptr)
+				*fallbackScore = vertScore;
+			if (fallbackObjective != nullptr)
+				*fallbackObjective = vertObjective;
+			if (fallbackApplied != nullptr)
+				*fallbackApplied = true;
+		}
+		else if (horizAccepted) {
+			dx = horizDx;
+			dy = horizDy;
+			rot = horizRot;
+			currentScore = (rot == 0.0f)
+				? EvaluateShiftNccSampled(img1, img2, width, height, dx, dy, 2)
+				: EvaluateShiftNccSampledRotated(img1, img2, width, height, dx, dy, rot, 2);
+			if (fallbackScore != nullptr)
+				*fallbackScore = horizScore;
+			if (fallbackObjective != nullptr)
+				*fallbackObjective = horizObjective;
+			if (fallbackApplied != nullptr)
+				*fallbackApplied = true;
+		}
+	}
+
+	if (pocScore < 0.70f && !edgeAccepted) {
+		auto tloc0 = std::chrono::high_resolution_clock::now();
+		FallbackLocalNccSearch(img1, img2, width, height, dx, dy, pocScore);
+		auto tloc1 = std::chrono::high_resolution_clock::now();
+		if (fallbackLocalMs != nullptr) {
+			*fallbackLocalMs = std::chrono::duration_cast<std::chrono::duration<double, std::milli>>(tloc1 - tloc0).count();
+		}
+
+		float localScore = EvaluateShiftNccSampled(img1, img2, width, height, dx, dy, 2);
+		if (localScore < 0.55f) {
+			auto tglob0 = std::chrono::high_resolution_clock::now();
+			FallbackGlobalNccSearch(img1, img2, width, height, dx, dy, rot, localScore);
+			auto tglob1 = std::chrono::high_resolution_clock::now();
+			if (fallbackGlobalMs != nullptr) {
+				*fallbackGlobalMs = std::chrono::duration_cast<std::chrono::duration<double, std::milli>>(tglob1 - tglob0).count();
+			}
+		}
+	}
+
+	currentScore = (rot == 0.0f)
+		? EvaluateShiftNccSampled(img1, img2, width, height, dx, dy, 2)
+		: EvaluateShiftNccSampledRotated(img1, img2, width, height, dx, dy, rot, 2);
+	bool shiftTooSmall = (abs(dx) < (width / 14)) && (abs(dy) < (height / 14));
+	if ((currentScore < 0.62f || shiftTooSmall) && !edgeAccepted) {
+		float edgeScore = currentScore;
+		float edgeObjective = currentScore + ShiftSelectionBias(width, height, dx, dy) + EdgeOverlapTargetBias(width, height, dx, dy);
+		bool edgeAcceptedRetry = false;
+		auto tedge0 = std::chrono::high_resolution_clock::now();
+		FallbackEdgeAnchoredSearch(img1, img2, width, height, dx, dy, rot, currentScore, &edgeScore, &edgeObjective, &edgeAcceptedRetry);
+		auto tedge1 = std::chrono::high_resolution_clock::now();
+		if (fallbackEdgeMs != nullptr) {
+			*fallbackEdgeMs = std::chrono::duration_cast<std::chrono::duration<double, std::milli>>(tedge1 - tedge0).count();
+		}
+		if (fallbackScore != nullptr)
+			*fallbackScore = edgeScore;
+		if (fallbackObjective != nullptr)
+			*fallbackObjective = edgeObjective;
+		if (fallbackApplied != nullptr)
+			*fallbackApplied = edgeAcceptedRetry;
+	}
+
+	if (currentScore < 0.80f || (fallbackApplied != nullptr && *fallbackApplied)) {
+		auto tref0 = std::chrono::high_resolution_clock::now();
+		RefineShiftRotationLocal(img1, img2, width, height, dx, dy, rot);
+		auto tref1 = std::chrono::high_resolution_clock::now();
+		currentScore = (rot == 0.0f)
+			? EvaluateShiftNccSampled(img1, img2, width, height, dx, dy, 2)
+			: EvaluateShiftNccSampledRotated(img1, img2, width, height, dx, dy, rot, 2);
+		if (fallbackEdgeMs != nullptr) {
+			double refineMs = std::chrono::duration_cast<std::chrono::duration<double, std::milli>>(tref1 - tref0).count();
+			if (*fallbackEdgeMs < 0.0) *fallbackEdgeMs = refineMs;
+			else *fallbackEdgeMs += refineMs;
+		}
 	}
 
 	if (signedShift != nullptr) {
