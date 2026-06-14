@@ -1,4 +1,4 @@
-﻿<?xml version="1.0" encoding="utf-8"?>
+<?xml version="1.0" encoding="utf-8"?>
 <Project DefaultTargets="Build" ToolsVersion="12.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
   <ItemGroup Label="ProjectConfigurations">
     <ProjectConfiguration Include="Debug|Win32">
@@ -21,6 +21,13 @@
   <PropertyGroup Label="Globals">
     <ProjectGuid>{20158D6F-6C39-4D9A-9FFB-6FEA71E567DC}</ProjectGuid>
     <TargetFrameworkVersion>v4.5</TargetFrameworkVersion>
+    <TargetOsProfile Condition="'$(TargetOsProfile)'==''">Win11</TargetOsProfile>
+    <PreferredWindowsTargetPlatformVersion Condition="'$(PreferredWindowsTargetPlatformVersion)'==''">10.0</PreferredWindowsTargetPlatformVersion>
+    <Windows10MinVersion Condition="'$(Windows10MinVersion)'==''">10.0.19041.0</Windows10MinVersion>
+    <Windows11MinVersion Condition="'$(Windows11MinVersion)'==''">10.0.22000.0</Windows11MinVersion>
+    <WindowsTargetPlatformVersion Condition="'$(WindowsTargetPlatformVersion)'==''">$(PreferredWindowsTargetPlatformVersion)</WindowsTargetPlatformVersion>
+    <WindowsTargetPlatformMinVersion Condition="'$(TargetOsProfile)'=='Win10'">$(Windows10MinVersion)</WindowsTargetPlatformMinVersion>
+    <WindowsTargetPlatformMinVersion Condition="'$(TargetOsProfile)'!='Win10'">$(Windows11MinVersion)</WindowsTargetPlatformMinVersion>
     <Keyword>ManagedCProj</Keyword>
     <RootNamespace>Image_Stitching</RootNamespace>
     <ProjectName>Image_Stitching</ProjectName>
@@ -29,28 +36,28 @@
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'" Label="Configuration">
     <ConfigurationType>Application</ConfigurationType>
     <UseDebugLibraries>true</UseDebugLibraries>
-    <PlatformToolset>v142</PlatformToolset>
+    <PlatformToolset>v143</PlatformToolset>
     <CLRSupport>true</CLRSupport>
     <CharacterSet>Unicode</CharacterSet>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'" Label="Configuration">
     <ConfigurationType>Application</ConfigurationType>
     <UseDebugLibraries>true</UseDebugLibraries>
-    <PlatformToolset>v142</PlatformToolset>
+    <PlatformToolset>v143</PlatformToolset>
     <CLRSupport>true</CLRSupport>
     <CharacterSet>Unicode</CharacterSet>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|Win32'" Label="Configuration">
     <ConfigurationType>Application</ConfigurationType>
     <UseDebugLibraries>false</UseDebugLibraries>
-    <PlatformToolset>v142</PlatformToolset>
+    <PlatformToolset>v143</PlatformToolset>
     <CLRSupport>true</CLRSupport>
     <CharacterSet>Unicode</CharacterSet>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'" Label="Configuration">
     <ConfigurationType>Application</ConfigurationType>
     <UseDebugLibraries>false</UseDebugLibraries>
-    <PlatformToolset>v142</PlatformToolset>
+    <PlatformToolset>v143</PlatformToolset>
     <CLRSupport>true</CLRSupport>
     <CharacterSet>Unicode</CharacterSet>
   </PropertyGroup>
@@ -92,7 +99,6 @@
       <GenerateDebugInformation>true</GenerateDebugInformation>
       <AdditionalDependencies />
       <SubSystem>Windows</SubSystem>
-      <EntryPointSymbol>Main</EntryPointSymbol>
     </Link>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
@@ -107,7 +113,6 @@
       <AdditionalDependencies>
       </AdditionalDependencies>
       <SubSystem>Windows</SubSystem>
-      <EntryPointSymbol>Main</EntryPointSymbol>
     </Link>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">
@@ -118,6 +123,7 @@
     <Link>
       <GenerateDebugInformation>true</GenerateDebugInformation>
       <AdditionalDependencies />
+      <SubSystem>Windows</SubSystem>
     </Link>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
@@ -129,7 +135,6 @@
       <GenerateDebugInformation>true</GenerateDebugInformation>
       <AdditionalDependencies>
       </AdditionalDependencies>
-      <EntryPointSymbol>Main</EntryPointSymbol>
       <SubSystem>Windows</SubSystem>
     </Link>
   </ItemDefinitionGroup>
@@ -148,6 +153,7 @@
     <ClInclude Include="Image_Stitching.h">
       <FileType>CppForm</FileType>
     </ClInclude>
+    <ClInclude Include="Localization.h" />
     <ClInclude Include="Panorama.h" />
     <ClInclude Include="Correlation.h" />
     <ClInclude Include="Process.h" />
@@ -158,11 +164,14 @@
     <EmbeddedResource Include="Image_Stitching.resx">
       <DependentUpon>Image_Stitching.h</DependentUpon>
     </EmbeddedResource>
+    <EmbeddedResource Include="Strings.resx" />
+    <EmbeddedResource Include="Strings.tr.resx" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="FFT.cpp" />
     <ClCompile Include="Image.cpp" />
     <ClCompile Include="Image_Stitching.cpp" />
+    <ClCompile Include="Localization.cpp" />
     <ClCompile Include="Panorama.cpp" />
     <ClCompile Include="Correlation.cpp" />
     <ClCompile Include="Process.cpp" />

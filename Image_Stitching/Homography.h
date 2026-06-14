@@ -1,6 +1,7 @@
 #pragma once
 #include <iostream>
 #include "SVD.h"
+#include "Localization.h"
 
 double** homography2d(double** points1, double** points2, int s) {
 	
@@ -18,6 +19,19 @@ double** homography2d(double** points1, double** points2, int s) {
 	dummy_array = (double*)malloc(sizeof(double) * 8);
 	X = (double*)malloc(sizeof(double) * 8);
 	B = (double*)malloc(sizeof(double) * s * 2);
+	if (A == nullptr || U == nullptr || V == nullptr || singularvalue == nullptr || dummy_array == nullptr || X == nullptr || B == nullptr) {
+		free(A);
+		free(U);
+		free(V);
+		free(singularvalue);
+		free(dummy_array);
+		free(X);
+		free(B);
+		for (int i = 0; i < 3; i++)
+			delete[] H[i];
+		delete[] H;
+		return nullptr;
+	}
 	double tolerance = 0;
 
 	double a1, b1, a2, b2;
@@ -39,19 +53,34 @@ double** homography2d(double** points1, double** points2, int s) {
 
 	int err = Singular_Value_Decomposition((double*)A, s * 2, 8, (double*)U, singularvalue, (double*)V, dummy_array);
 	free(dummy_array);
+	dummy_array = nullptr;
 	if (err < 0) {
-		System::Windows::Forms::MessageBox::Show("Homography Basarisiz\n");
-		return 0;
+		free(A);
+		free(U);
+		free(V);
+		free(singularvalue);
+		free(B);
+		free(X);
+		for (int i = 0; i < 3; i++)
+			delete[] H[i];
+		delete[] H;
+		System::Windows::Forms::MessageBox::Show(Localization::T("MsgHomographyFailed"));
+		return nullptr;
 	}
 	else {
 
 		Singular_Value_Decomposition_Solve((double*)U, singularvalue, (double*)V, tolerance, s * 2, 8, B, X);
 
 		free(A);
+		A = nullptr;
 		free(U);
+		U = nullptr;
 		free(V);
+		V = nullptr;
 		free(singularvalue);
+		singularvalue = nullptr;
 		free(B);
+		B = nullptr;
 	}
 	
 	for (int i = 0; i < 2; i++)
@@ -64,7 +93,7 @@ double** homography2d(double** points1, double** points2, int s) {
 	H[2][1] = X[7];
 	H[2][2] = 1;
 	free(X);
-
+	X = nullptr;
 
 	return H;
 }//homography2d

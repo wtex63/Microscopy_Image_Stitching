@@ -1,0 +1,73 @@
+<?xml version="1.0" encoding="utf-8"?>
+<root>
+  <resheader name="resmimetype">
+    <value>text/microsoft-resx</value>
+  </resheader>
+  <resheader name="version">
+    <value>2.0</value>
+  </resheader>
+  <resheader name="reader">
+    <value>System.Resources.ResXResourceReader, System.Windows.Forms, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089</value>
+  </resheader>
+  <resheader name="writer">
+    <value>System.Resources.ResXResourceWriter, System.Windows.Forms, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089</value>
+  </resheader>
+
+  <data name="MenuFile" xml:space="preserve"><value>Dosya</value></data>
+  <data name="MenuOpen" xml:space="preserve"><value>Ac</value></data>
+  <data name="MenuLanguage" xml:space="preserve"><value>Dil</value></data>
+  <data name="MenuEnglish" xml:space="preserve"><value>Ingilizce</value></data>
+  <data name="MenuTurkish" xml:space="preserve"><value>Turkce</value></data>
+
+  <data name="FormTitle" xml:space="preserve"><value>Goruntu Birlestirme</value></data>
+  <data name="LabelImage" xml:space="preserve"><value>goruntu :</value></data>
+  <data name="ButtonSave" xml:space="preserve"><value>Kaydet</value></data>
+
+  <data name="OpenDialogFileName" xml:space="preserve"><value>dosyaAc</value></data>
+  <data name="OpenDialogFilter" xml:space="preserve"><value>Goruntu dosyalari (*.bmp;*.jpg;*.jpeg)|*.bmp;*.jpg;*.jpeg|BMP dosyalari (*.bmp)|*.bmp|JPEG dosyalari (*.jpg;*.jpeg)|*.jpg;*.jpeg|Tum dosyalar (*.*)|*.*</value></data>
+
+  <data name="MsgMissingMatches" xml:space="preserve"><value>4 eslesme noktasi bulunamadi.</value></data>
+  <data name="MsgSavedImage" xml:space="preserve"><value>SavedImg_{0}.bmp kaydedildi.</value></data>
+  <data name="MsgHomographyFailed" xml:space="preserve"><value>Homography basarisiz.</value></data>
+
+  <data name="MsgAppErrorTitle" xml:space="preserve"><value>Uygulama Hatasi</value></data>
+  <data name="MsgAppError" xml:space="preserve"><value>Hata: {0}
+
+Yigin Izleme:
+{1}</value></data>
+  <data name="MsgUnknownError" xml:space="preserve"><value>Bilinmeyen bir hata olustu.</value></data>
+
+  <data name="LogStitchStart" xml:space="preserve"><value>{0} goruntu cifti icin birlestirme basladi.</value></data>
+  <data name="LogProcessingPair" xml:space="preserve"><value>{0}/{1} cifti isleniyor.</value></data>
+  <data name="LogLoadingFirstTwo" xml:space="preserve"><value>Ilk iki goruntu yukleniyor.</value></data>
+  <data name="LogLoadingNext" xml:space="preserve"><value>Sonraki goruntu yukleniyor.</value></data>
+  <data name="LogComputingShift" xml:space="preserve"><value>Kayma ve ortusme hesaplanıyor.</value></data>
+  <data name="LogFFTFirst" xml:space="preserve"><value>Ilk goruntu icin FFT hesaplaniyor.</value></data>
+  <data name="LogFFTSecond" xml:space="preserve"><value>Ikinci goruntu icin FFT hesaplaniyor.</value></data>
+  <data name="LogPhaseCorrelationRunning" xml:space="preserve"><value>Faz korelasyonu calistiriliyor.</value></data>
+  <data name="LogPeakSearch" xml:space="preserve"><value>Korelasyon haritasinda tepe araniyor.</value></data>
+  <data name="LogMatchFailed" xml:space="preserve"><value>Yeterli eslesme noktasi bulunamadi.</value></data>
+  <data name="LogUnreliablePairRejected" xml:space="preserve"><value>Cift reddedildi: guven dusuk ve geri dusum modeli guvenilir degil.</value></data>
+  <data name="LogMatchingHomography" xml:space="preserve"><value>Eslesme noktalarindan homografi hesaplaniyor.</value></data>
+  <data name="LogBlendingPanorama" xml:space="preserve"><value>Goruntuler harmanlanip panorama yeniden ciziliyor.</value></data>
+  <data name="LogPhaseConfidence" xml:space="preserve"><value>Faz guveni: {0:F2}</value></data>
+  <data name="LogFeatureFallbackStart" xml:space="preserve"><value>Faz guveni dusuk; ozellik/NCC geri dusum aramasi basladi.</value></data>
+  <data name="LogFeatureFallbackUsed" xml:space="preserve"><value>Ozellik geri dusumu kullanildi (RANSAC ic oran: {0:P0}).</value></data>
+  <data name="LogFeatureFallbackFailed" xml:space="preserve"><value>Ozellik geri dusumu guvenilir bir model bulamadi.</value></data>
+  <data name="LogTranslationFallback" xml:space="preserve"><value>Oteleme geri dusum modeli kullaniliyor.</value></data>
+  <data name="LogPanoramaUpdated" xml:space="preserve"><value>Panorama guncellendi: {0} x {1}</value></data>
+  <data name="LogFinishedPair" xml:space="preserve"><value>{0}/{1} cifti tamamlandi.</value></data>
+  <data name="LogCompleted" xml:space="preserve"><value>Birlestirme tamamlandi.</value></data>
+  <data name="LogSaveNoImage" xml:space="preserve"><value>Kaydetme istendi ancak renkli cikti yok.</value></data>
+  <data name="LogSavedOutput" xml:space="preserve"><value>Cikti goruntusu kaydedildi: SavedImg_{0}.bmp</value></data>
+  <data name="LogSaveFailed" xml:space="preserve"><value>Cikti goruntusu kaydedilemedi.</value></data>
+
+  <data name="StatusTitle" xml:space="preserve"><value>Durum</value></data>
+  <data name="StatusConfidence" xml:space="preserve"><value>Guven:</value></data>
+  <data name="StatusInlierRatio" xml:space="preserve"><value>Ic oran:</value></data>
+  <data name="StatusMatcher" xml:space="preserve"><value>Eslestirici:</value></data>
+  <data name="StatusElapsed" xml:space="preserve"><value>Sure:</value></data>
+  <data name="StatusValueNA" xml:space="preserve"><value>Yok</value></data>
+  <data name="MatcherPhaseFast" xml:space="preserve"><value>Faz (hizli)</value></data>
+  <data name="MatcherFeatureRansac" xml:space="preserve"><value>Ozellik + RANSAC</value></data>
+</root>

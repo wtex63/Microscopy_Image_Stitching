@@ -45,6 +45,9 @@
     <ClInclude Include="Image_Stitching.h">
       <Filter>Header Files</Filter>
     </ClInclude>
+    <ClInclude Include="Localization.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="FFT.cpp">
@@ -68,5 +71,20 @@
     <ClCompile Include="Image_Stitching.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="Localization.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+  </ItemGroup>
+  <ItemGroup>
+    <EmbeddedResource Include="Image_Stitching.resx">
+      <Filter>Resource Files</Filter>
+    </EmbeddedResource>
+    <EmbeddedResource Include="Strings.resx">
+      <Filter>Resource Files</Filter>
+    </EmbeddedResource>
+    <EmbeddedResource Include="Strings.tr.resx">
+      <Filter>Resource Files</Filter>
+    </EmbeddedResource>
   </ItemGroup>
 </Project>
+

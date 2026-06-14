@@ -1,0 +1,55 @@
+# Visual Studio
+.vs/
+*.suo
+*.user
+*.userosscache
+*.sln.docstates
+
+# Build output
+[Bb]in/
+[Oo]bj/
+[Dd]ebug/
+[Rr]elease/
+x64/
+x86/
+
+# C++ intermediate/build artifacts
+*.obj
+*.o
+*.pch
+*.pdb
+*.ilk
+*.idb
+*.ipdb
+*.iobj
+*.tlog
+*.lastbuildstate
+*.cache
+*.log
+*.tmp
+*.rsp
+*.recipe
+*.manifest
+*.exp
+*.lib
+*.dll
+*.exe
+*.metagen
+
+# Generated directories in project tree
+Image_Stitching/x64/
+
+# Keep source/resources tracked
+!*.cpp
+!*.h
+!*.hpp
+!*.resx
+!*.vcxproj
+!*.vcxproj.filters
+
+# Generated output images
+SavedImg_*.bmp
+SavedImg_*.png
+
+# Temporary patch/diff artifacts
+diff Image_Stitching/

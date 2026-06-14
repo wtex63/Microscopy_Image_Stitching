@@ -1,0 +1,73 @@
+<?xml version="1.0" encoding="utf-8"?>
+<root>
+  <resheader name="resmimetype">
+    <value>text/microsoft-resx</value>
+  </resheader>
+  <resheader name="version">
+    <value>2.0</value>
+  </resheader>
+  <resheader name="reader">
+    <value>System.Resources.ResXResourceReader, System.Windows.Forms, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089</value>
+  </resheader>
+  <resheader name="writer">
+    <value>System.Resources.ResXResourceWriter, System.Windows.Forms, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089</value>
+  </resheader>
+
+  <data name="MenuFile" xml:space="preserve"><value>File</value></data>
+  <data name="MenuOpen" xml:space="preserve"><value>Open</value></data>
+  <data name="MenuLanguage" xml:space="preserve"><value>Language</value></data>
+  <data name="MenuEnglish" xml:space="preserve"><value>English</value></data>
+  <data name="MenuTurkish" xml:space="preserve"><value>Turkish</value></data>
+
+  <data name="FormTitle" xml:space="preserve"><value>Image Stitching</value></data>
+  <data name="LabelImage" xml:space="preserve"><value>image :</value></data>
+  <data name="ButtonSave" xml:space="preserve"><value>Save</value></data>
+
+  <data name="OpenDialogFileName" xml:space="preserve"><value>openFileDialog1</value></data>
+  <data name="OpenDialogFilter" xml:space="preserve"><value>Image files (*.bmp;*.jpg;*.jpeg)|*.bmp;*.jpg;*.jpeg|BMP files (*.bmp)|*.bmp|JPEG files (*.jpg;*.jpeg)|*.jpg;*.jpeg|All files (*.*)|*.*</value></data>
+
+  <data name="MsgMissingMatches" xml:space="preserve"><value>4 matching points could not be found.</value></data>
+  <data name="MsgSavedImage" xml:space="preserve"><value>SavedImg_{0}.bmp saved.</value></data>
+  <data name="MsgHomographyFailed" xml:space="preserve"><value>Homography failed.</value></data>
+
+  <data name="MsgAppErrorTitle" xml:space="preserve"><value>Application Error</value></data>
+  <data name="MsgAppError" xml:space="preserve"><value>Error: {0}
+
+Stack Trace:
+{1}</value></data>
+  <data name="MsgUnknownError" xml:space="preserve"><value>An unknown error occurred.</value></data>
+
+  <data name="LogStitchStart" xml:space="preserve"><value>Started stitching for {0} image pair(s).</value></data>
+  <data name="LogProcessingPair" xml:space="preserve"><value>Processing pair {0}/{1}.</value></data>
+  <data name="LogLoadingFirstTwo" xml:space="preserve"><value>Loading first two images.</value></data>
+  <data name="LogLoadingNext" xml:space="preserve"><value>Loading next image.</value></data>
+  <data name="LogComputingShift" xml:space="preserve"><value>Computing displacement and overlap.</value></data>
+  <data name="LogFFTFirst" xml:space="preserve"><value>Computing FFT for first image.</value></data>
+  <data name="LogFFTSecond" xml:space="preserve"><value>Computing FFT for second image.</value></data>
+  <data name="LogPhaseCorrelationRunning" xml:space="preserve"><value>Running phase correlation.</value></data>
+  <data name="LogPeakSearch" xml:space="preserve"><value>Searching peak in correlation map.</value></data>
+  <data name="LogMatchFailed" xml:space="preserve"><value>Failed to find enough matching points.</value></data>
+  <data name="LogUnreliablePairRejected" xml:space="preserve"><value>Pair rejected: confidence is low and fallback model is unreliable.</value></data>
+  <data name="LogMatchingHomography" xml:space="preserve"><value>Matching points and computing homography.</value></data>
+  <data name="LogBlendingPanorama" xml:space="preserve"><value>Blending images and redrawing panorama.</value></data>
+  <data name="LogPhaseConfidence" xml:space="preserve"><value>Phase confidence: {0:F2}</value></data>
+  <data name="LogFeatureFallbackStart" xml:space="preserve"><value>Phase confidence is low; starting feature/NCC fallback search.</value></data>
+  <data name="LogFeatureFallbackUsed" xml:space="preserve"><value>Feature fallback used (RANSAC inlier ratio: {0:P0}).</value></data>
+  <data name="LogFeatureFallbackFailed" xml:space="preserve"><value>Feature fallback did not find a reliable model.</value></data>
+  <data name="LogTranslationFallback" xml:space="preserve"><value>Using translation fallback model.</value></data>
+  <data name="LogPanoramaUpdated" xml:space="preserve"><value>Panorama updated: {0} x {1}</value></data>
+  <data name="LogFinishedPair" xml:space="preserve"><value>Finished pair {0}/{1}.</value></data>
+  <data name="LogCompleted" xml:space="preserve"><value>Stitching completed.</value></data>
+  <data name="LogSaveNoImage" xml:space="preserve"><value>Save requested but no color output is available.</value></data>
+  <data name="LogSavedOutput" xml:space="preserve"><value>Saved output image: SavedImg_{0}.bmp</value></data>
+  <data name="LogSaveFailed" xml:space="preserve"><value>Failed to save output image.</value></data>
+
+  <data name="StatusTitle" xml:space="preserve"><value>Status</value></data>
+  <data name="StatusConfidence" xml:space="preserve"><value>Confidence:</value></data>
+  <data name="StatusInlierRatio" xml:space="preserve"><value>Inlier ratio:</value></data>
+  <data name="StatusMatcher" xml:space="preserve"><value>Matcher:</value></data>
+  <data name="StatusElapsed" xml:space="preserve"><value>Elapsed:</value></data>
+  <data name="StatusValueNA" xml:space="preserve"><value>N/A</value></data>
+  <data name="MatcherPhaseFast" xml:space="preserve"><value>Phase (fast)</value></data>
+  <data name="MatcherFeatureRansac" xml:space="preserve"><value>Feature + RANSAC</value></data>
+</root>

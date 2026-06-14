@@ -7,11 +7,16 @@
 xy Transfer(double** H, int x, int y) {
 	xy point;
 	double xx, yy, zz;
-	xx = round(H[0][0] * (double)x + H[0][1] * (double)y + H[0][2]);
-	yy = round(H[1][0] * (double)x + H[1][1] * (double)y + H[1][2]);
-	zz = round(H[2][0] * (double)x + H[2][1] * (double)y + H[2][2]);
-	point.x = int(xx / zz);
-	point.y = int(yy / zz);
+	xx = H[0][0] * (double)x + H[0][1] * (double)y + H[0][2];
+	yy = H[1][0] * (double)x + H[1][1] * (double)y + H[1][2];
+	zz = H[2][0] * (double)x + H[2][1] * (double)y + H[2][2];
+	if (fabs(zz) <= 1e-12) {
+		point.x = x;
+		point.y = y;
+		return point;
+	}
+	point.x = (int)round(xx / zz);
+	point.y = (int)round(yy / zz);
 	return point;
 }
 
@@ -114,9 +119,13 @@ BYTE* PanoToResized(BYTE* Raw, int Width, int Height, xy newPanoSize, xy positio
 		}
 	}
 
-	tempR /= (int(Width / 10) * Height);
-	tempG /= (int(Width / 10) * Height);
-	tempB /= (int(Width / 10) * Height);
+	int sampleCols = (Width + 9) / 10;
+	if (sampleCols < 1) sampleCols = 1;
+	size_t sampleCount = (size_t)sampleCols * (size_t)Height;
+	if (sampleCount == 0) sampleCount = 1;
+	tempR /= sampleCount;
+	tempG /= sampleCount;
+	tempB /= sampleCount;
 
 #pragma omp parallel num_threads(NUM_THREADS) shared(newPanoSizeY, newPanoSizeX, panoImg, tempR, tempG, tempB) private(bufpos)
 	{
@@ -443,9 +452,14 @@ void GoruntuDuzelt(BYTE* Raw, xy Size, BYTE* tempRaw, int Width, int Height) {
 		}
 	}
 
-	BYTE meanR = BYTE(tempR / (int(Width / 10) * Height));
-	BYTE meanG = BYTE(tempG / (int(Width / 10) * Height));
-	BYTE meanB = BYTE(tempB / (int(Width / 10) * Height));
+	int sampleCols = (Width + 9) / 10;
+	if (sampleCols < 1) sampleCols = 1;
+	size_t sampleCount = (size_t)sampleCols * (size_t)Height;
+	if (sampleCount == 0) sampleCount = 1;
+
+	BYTE meanR = BYTE(tempR / sampleCount);
+	BYTE meanG = BYTE(tempG / sampleCount);
+	BYTE meanB = BYTE(tempB / sampleCount);
 
 
 #pragma omp parallel num_threads(NUM_THREADS) private(bufpos)
@@ -490,9 +504,13 @@ BYTE* ImageToResized(double** H, BYTE* Raw, int Width, int Height, xy Size, xy p
 		}
 	}
 
-	tempR /= (int(Width / 10) * Height);
-	tempG /= (int(Width / 10) * Height);
-	tempB /= (int(Width / 10) * Height);
+	int sampleCols = (Width + 9) / 10;
+	if (sampleCols < 1) sampleCols = 1;
+	size_t sampleCount = (size_t)sampleCols * (size_t)Height;
+	if (sampleCount == 0) sampleCount = 1;
+	tempR /= sampleCount;
+	tempG /= sampleCount;
+	tempB /= sampleCount;
 
 #pragma omp parallel num_threads(NUM_THREADS) shared(sizeY, sizeX, resizedImg, tempR, tempG, tempB) private(bufpos)
 	{
@@ -512,14 +530,18 @@ BYTE* ImageToResized(double** H, BYTE* Raw, int Width, int Height, xy Size, xy p
 #pragma omp parallel num_threads(NUM_THREADS) shared(Height, Width, sizeY, positionY, sizeX, positionX, Raw, resizedImg)
 	{
 		xy point;
-		int buf; int rawBuf;
+		int dstX, dstY;
+		size_t buf;
+		int rawBuf;
 #pragma omp for schedule(dynamic) nowait
 		for (int i = 0; i < Height; i++) {
 			for (int j = 0; j < Width; j++) {
 				point = Transfer(H, j, i);
-				buf = (sizeY - (positionY + point.y) - 1) * sizeX * 3 + (point.x + positionX) * 3;
+				dstX = point.x + positionX;
+				dstY = point.y + positionY;
 
-				if (buf > 0) {
+				if (dstX >= 0 && dstX < sizeX && dstY >= 0 && dstY < sizeY) {
+					buf = (size_t)(sizeY - dstY - 1) * (size_t)sizeX * 3 + (size_t)dstX * 3;
 					rawBuf = (Height - i - 1) * Width * 3 + j * 3;
 					resizedImg[buf] = Raw[rawBuf];
 					resizedImg[buf + 1] = Raw[rawBuf + 1];
@@ -1190,8 +1212,8 @@ BYTE* Filter(BYTE* Raw, double** H, xy position, int Width, int Height, xy newSi
 				double xRate = xLength / yLength;
 				int xTemp = 0, yTemp = 0;
 
-				for (size_t row = yStart; row < yEnd; row++) {
-					for (size_t col = xStart - xTemp; col <= xEnd; col++)
+				for (int row = yStart; row < yEnd; row++) {
+					for (int col = xStart - xTemp; col <= xEnd; col++)
 					{
 
 						bufpos = (height - row - 1) * width * 3 + col * 3;
@@ -1202,8 +1224,8 @@ BYTE* Filter(BYTE* Raw, double** H, xy position, int Width, int Height, xy newSi
 					yTemp++;
 					xTemp = int(xRate * yTemp);
 				}
-				for (size_t row = yEnd; row <= point4.y; row++) {
-					for (size_t col = point1.x; col <= point4.x; col++)
+				for (int row = yEnd; row <= point4.y; row++) {
+					for (int col = point1.x; col <= point4.x; col++)
 					{
 						bufpos = (height - row - 1) * width * 3 + col * 3;
 						Raw[bufpos + 2] = 0;
@@ -1286,19 +1308,19 @@ BYTE* Filter(BYTE* Raw, double** H, xy position, int Width, int Height, xy newSi
 				double xRate = xLength / yLength;
 				int xTemp = 0, yTemp = 0;
 
-				for (size_t row = yStart; row < yEnd; row++) {
-					for (size_t col = xStart; col <= xEnd + xTemp; col++)
+				for (int row = yStart; row < yEnd; row++) {
+					for (int col = xStart; col <= xEnd + xTemp; col++)
 					{
 						bufpos = (height - row - 1) * width * 3 + col * 3;
 						Raw[bufpos + 2] = 0;
 						Raw[bufpos + 1] = 0;
 						Raw[bufpos] = 0;
 					}
-					yTemp++;
+				 yTemp++;
 					xTemp = int(xRate * yTemp);
 				}
-				for (size_t row = yEnd; row <= point4.y; row++) {
-					for (size_t col = xStart; col <= point4.x; col++)
+				for (int row = yEnd; row <= point4.y; row++) {
+					for (int col = xStart; col <= point4.x; col++)
 					{
 						bufpos = (height - row - 1) * width * 3 + col * 3;
 						Raw[bufpos + 2] = 0;
@@ -1396,8 +1418,8 @@ BYTE* Filter(BYTE* Raw, double** H, xy position, int Width, int Height, xy newSi
 				double yLength = point2.y - yStart - currVec->y;
 				double xRate = xLength / yLength;
 
-				for (size_t row = yStart; row < yEnd; row++) {
-					for (size_t col = xStart; col <= point3.x; col++)
+				for (int row = yStart; row < yEnd; row++) {
+					for (int col = xStart; col <= point3.x; col++)
 					{
 						bufpos = (height - row - 1) * width * 3 + col * 3;
 						Raw[bufpos + 2] = 0;
@@ -1407,11 +1429,11 @@ BYTE* Filter(BYTE* Raw, double** H, xy position, int Width, int Height, xy newSi
 				}
 
 				int xTemp = 0, yTemp = int(yLength);
-				for (size_t row = yEnd; row <= point2.y; row++) {
+				for (int row = yEnd; row <= point2.y; row++) {
 
 					yTemp--;
-					xTemp = int(xRate * yTemp);
-					for (size_t col = xStart; col <= xEnd + xTemp; col++)
+				 xTemp = int(xRate * yTemp);
+					for (int col = xStart; col <= xEnd + xTemp; col++)
 					{
 						bufpos = (height - row - 1) * width * 3 + col * 3;
 						Raw[bufpos + 2] = 0;
@@ -1426,6 +1448,113 @@ BYTE* Filter(BYTE* Raw, double** H, xy position, int Width, int Height, xy newSi
 	return Raw;
 }
 
+static void ApplyInitialPairOverlapMask(BYTE* mask, int width, int height, double** H, int baseWidth, int baseHeight, xy position, xy* currVec)
+{
+	auto ClampByteInt = [](int value) -> BYTE {
+		if (value < 0) return (BYTE)0;
+		if (value > 255) return (BYTE)255;
+		return (BYTE)value;
+	};
+	auto MaxInt = [](int a, int b) -> int {
+		return (a > b) ? a : b;
+	};
+	auto MinInt = [](int a, int b) -> int {
+		return (a < b) ? a : b;
+	};
+
+	if (mask == nullptr || width <= 0 || height <= 0 || currVec == nullptr || H == nullptr)
+		return;
+
+	const int baseLeft = position.x;
+	const int baseTop = position.y;
+	const int baseRight = baseLeft + baseWidth - 1;
+	const int baseBottom = baseTop + baseHeight - 1;
+
+	xy c1 = Transfer(H, 0, 0);
+	xy c2 = Transfer(H, baseWidth - 1, 0);
+	xy c3 = Transfer(H, 0, baseHeight - 1);
+	xy c4 = Transfer(H, baseWidth - 1, baseHeight - 1);
+
+	c1.x += position.x; c1.y += position.y;
+	c2.x += position.x; c2.y += position.y;
+	c3.x += position.x; c3.y += position.y;
+	c4.x += position.x; c4.y += position.y;
+
+	int secLeft = MinInt(MinInt(c1.x, c2.x), MinInt(c3.x, c4.x));
+	int secRight = MaxInt(MaxInt(c1.x, c2.x), MaxInt(c3.x, c4.x));
+	int secTop = MinInt(MinInt(c1.y, c2.y), MinInt(c3.y, c4.y));
+	int secBottom = MaxInt(MaxInt(c1.y, c2.y), MaxInt(c3.y, c4.y));
+
+	const int canvasLeft = 0;
+	const int canvasTop = 0;
+	const int canvasRight = width - 1;
+	const int canvasBottom = height - 1;
+
+	int bLeft = MaxInt(baseLeft, canvasLeft);
+	int bRight = MinInt(baseRight, canvasRight);
+	int bTop = MaxInt(baseTop, canvasTop);
+	int bBottom = MinInt(baseBottom, canvasBottom);
+
+	int sLeft = MaxInt(secLeft, canvasLeft);
+	int sRight = MinInt(secRight, canvasRight);
+	int sTop = MaxInt(secTop, canvasTop);
+	int sBottom = MinInt(secBottom, canvasBottom);
+
+	int ovLeft = MaxInt(bLeft, sLeft);
+	int ovRight = MinInt(bRight, sRight);
+	int ovTop = MaxInt(bTop, sTop);
+	int ovBottom = MinInt(bBottom, sBottom);
+
+	const bool hasOverlap = (ovLeft <= ovRight && ovTop <= ovBottom);
+	const bool verticalDominant = (abs(currVec->y) >= abs(currVec->x));
+	const bool secondBelow = ((sTop + sBottom) >= (bTop + bBottom));
+	const bool secondRight = ((sLeft + sRight) >= (bLeft + bRight));
+
+	for (int y = 0; y < height; y++) {
+		for (int x = 0; x < width; x++) {
+			const bool inBase = (x >= bLeft && x <= bRight && y >= bTop && y <= bBottom);
+			const bool inSecond = (x >= sLeft && x <= sRight && y >= sTop && y <= sBottom);
+
+			int alpha = 255;
+			if (inBase && !inSecond) {
+				alpha = 255;
+			}
+			else if (!inBase && inSecond) {
+				alpha = 0;
+			}
+			else if (inBase && inSecond) {
+				if (hasOverlap) {
+					if (verticalDominant) {
+						const int span = MaxInt(1, ovBottom - ovTop);
+						int t = ((y - ovTop) * 255) / span;
+						if (t < 0) t = 0;
+						if (t > 255) t = 255;
+						alpha = secondBelow ? (255 - t) : t;
+					}
+					else {
+						const int span = MaxInt(1, ovRight - ovLeft);
+						int t = ((x - ovLeft) * 255) / span;
+						if (t < 0) t = 0;
+						if (t > 255) t = 255;
+						alpha = secondRight ? (255 - t) : t;
+					}
+				}
+				else {
+					alpha = verticalDominant
+						? (secondBelow ? (y < height / 2 ? 255 : 0) : (y < height / 2 ? 0 : 255))
+						: (secondRight ? (x < width / 2 ? 255 : 0) : (x < width / 2 ? 0 : 255));
+				}
+			}
+
+			size_t buf = (size_t)(height - y - 1) * (size_t)width * 3 + (size_t)x * 3;
+			BYTE a = ClampByteInt(alpha);
+			mask[buf + 2] = a;
+			mask[buf + 1] = a;
+			mask[buf] = a;
+		}
+	}
+}
+
 
 BYTE* PanaromicImage(double** H, int Width, int Height, xy Size, xy position, BYTE2** LaplacePyramid1, BYTE2** LaplacePyramid2, int& width, int& height, int orWidth, int orHeight, bool isFirstLine, int currCornerID, xy* currVec)
 {
@@ -1434,7 +1563,14 @@ BYTE* PanaromicImage(double** H, int Width, int Height, xy Size, xy position, BY
 
 	memset(M, (BYTE)255, height * width * 3);
 
-	M = Filter(M, H, position, Width, Height, Size, width, height, orWidth, orHeight, isFirstLine, currCornerID, currVec);
+	const bool isInitialPair = (Width == orWidth && Height == orHeight);
+	if (isInitialPair) {
+		// For two-image stitching, build the mask from actual overlap on the expanded canvas.
+		ApplyInitialPairOverlapMask(M, width, height, H, Width, Height, position, currVec);
+	}
+	else {
+		M = Filter(M, H, position, Width, Height, Size, width, height, orWidth, orHeight, isFirstLine, currCornerID, currVec);
+	}
 
 	BYTE* MGauss1 = M;
 	BYTE2* SLaplace1 = new BYTE2[width * height * 3];
@@ -1457,6 +1593,8 @@ BYTE* PanaromicImage(double** H, int Width, int Height, xy Size, xy position, BY
 	delete[] MGauss1;
 	delete[] LaplacePyramid1[0];
 	delete[] LaplacePyramid2[0];
+	LaplacePyramid1[0] = nullptr;
+	LaplacePyramid2[0] = nullptr;
 
 	BYTE2* SLaplace2 = new BYTE2[width * height * 3];
 #pragma omp parallel num_threads(NUM_THREADS) private(bufpos1)
@@ -1477,6 +1615,8 @@ BYTE* PanaromicImage(double** H, int Width, int Height, xy Size, xy position, BY
 	delete[] MGauss2;
 	delete[] LaplacePyramid1[1];
 	delete[] LaplacePyramid2[1];
+	LaplacePyramid1[1] = nullptr;
+	LaplacePyramid2[1] = nullptr;
 
 	BYTE2* SLaplace3 = new BYTE2[width * height * 3];
 #pragma omp parallel num_threads(NUM_THREADS) private(bufpos1)
@@ -1498,6 +1638,8 @@ BYTE* PanaromicImage(double** H, int Width, int Height, xy Size, xy position, BY
 	delete[] MGauss3;
 	delete[] LaplacePyramid1[2];
 	delete[] LaplacePyramid2[2];
+	LaplacePyramid1[2] = nullptr;
+	LaplacePyramid2[2] = nullptr;
 
 	BYTE2* SLaplace4 = new BYTE2[width * height * 3];
 #pragma omp parallel num_threads(NUM_THREADS) private(bufpos1)
@@ -1517,6 +1659,8 @@ BYTE* PanaromicImage(double** H, int Width, int Height, xy Size, xy position, BY
 	delete[] MGauss4;
 	delete[] LaplacePyramid1[3];
 	delete[] LaplacePyramid2[3];
+	LaplacePyramid1[3] = nullptr;
+	LaplacePyramid2[3] = nullptr;
 
 
 	BYTE2* EL4 = Expand(SLaplace4, width, height);
